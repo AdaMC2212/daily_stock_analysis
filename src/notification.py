@@ -23,36 +23,15 @@ from src.config import get_config
 from src.analyzer import AnalysisResult
 from bot.models import BotMessage
 from src.utils.data_processing import normalize_model_used
-from src.notification_sender import (
-    AstrbotSender,
-    CustomWebhookSender,
-    DiscordSender,
-    EmailSender,
-    FeishuSender,
-    PushoverSender,
-    PushplusSender,
-    Serverchan3Sender,
-    TelegramSender,
-    WechatSender,
-    WECHAT_IMAGE_MAX_BYTES
-)
+from src.notification_sender import EmailSender
 
 logger = logging.getLogger(__name__)
 
 
 class NotificationChannel(Enum):
     """通知渠道类型"""
-    WECHAT = "wechat"      # 企业微信
-    FEISHU = "feishu"      # 飞书
-    TELEGRAM = "telegram"  # Telegram
-    EMAIL = "email"        # 邮件
-    PUSHOVER = "pushover"  # Pushover（手机/桌面推送）
-    PUSHPLUS = "pushplus"  # PushPlus（国内推送服务）
-    SERVERCHAN3 = "serverchan3"  # Server酱3（手机APP推送服务）
-    CUSTOM = "custom"      # 自定义 Webhook
-    DISCORD = "discord"    # Discord 机器人 (Bot)
-    ASTRBOT = "astrbot"
-    UNKNOWN = "unknown"    # 未知
+    EMAIL = "email"
+    UNKNOWN = "unknown"
 
 
 class ChannelDetector:
@@ -66,32 +45,14 @@ class ChannelDetector:
     def get_channel_name(channel: NotificationChannel) -> str:
         """获取渠道中文名称"""
         names = {
-            NotificationChannel.WECHAT: "企业微信",
-            NotificationChannel.FEISHU: "飞书",
-            NotificationChannel.TELEGRAM: "Telegram",
             NotificationChannel.EMAIL: "邮件",
-            NotificationChannel.PUSHOVER: "Pushover",
-            NotificationChannel.PUSHPLUS: "PushPlus",
-            NotificationChannel.SERVERCHAN3: "Server酱3",
-            NotificationChannel.CUSTOM: "自定义Webhook",
-            NotificationChannel.DISCORD: "Discord机器人",
-            NotificationChannel.ASTRBOT: "ASTRBOT机器人",
             NotificationChannel.UNKNOWN: "未知渠道",
         }
         return names.get(channel, "未知渠道")
 
 
 class NotificationService(
-    AstrbotSender,
-    CustomWebhookSender,
-    DiscordSender,
     EmailSender,
-    FeishuSender,
-    PushoverSender,
-    PushplusSender,
-    Serverchan3Sender,
-    TelegramSender,
-    WechatSender
 ):
     """
     通知服务
@@ -133,21 +94,10 @@ class NotificationService(
         self._report_summary_only = getattr(config, 'report_summary_only', False)
 
         # 初始化各渠道
-        AstrbotSender.__init__(self, config)
-        CustomWebhookSender.__init__(self, config)
-        DiscordSender.__init__(self, config)
         EmailSender.__init__(self, config)
-        FeishuSender.__init__(self, config)
-        PushoverSender.__init__(self, config)
-        PushplusSender.__init__(self, config)
-        Serverchan3Sender.__init__(self, config)
-        TelegramSender.__init__(self, config)
-        WechatSender.__init__(self, config)
         
         # 检测所有已配置的渠道
         self._available_channels = self._detect_all_channels()
-        if self._has_context_channel():
-            self._context_channels.append("钉钉会话")
         
         if not self._available_channels and not self._context_channels:
             logger.warning("未配置有效的通知渠道，将不发送推送通知")
@@ -171,47 +121,7 @@ class NotificationService(
         Returns:
             已配置的渠道列表
         """
-        channels = []
-        
-        # 企业微信
-        if self._wechat_url:
-            channels.append(NotificationChannel.WECHAT)
-        
-        # 飞书
-        if self._feishu_url:
-            channels.append(NotificationChannel.FEISHU)
-        
-        # Telegram
-        if self._is_telegram_configured():
-            channels.append(NotificationChannel.TELEGRAM)
-        
-        # 邮件
-        if self._is_email_configured():
-            channels.append(NotificationChannel.EMAIL)
-        
-        # Pushover
-        if self._is_pushover_configured():
-            channels.append(NotificationChannel.PUSHOVER)
-
-        # PushPlus
-        if self._pushplus_token:
-            channels.append(NotificationChannel.PUSHPLUS)
-
-       # Server酱3
-        if self._serverchan3_sendkey:
-            channels.append(NotificationChannel.SERVERCHAN3)
-       
-        # 自定义 Webhook
-        if self._custom_webhook_urls:
-            channels.append(NotificationChannel.CUSTOM)
-        
-        # Discord
-        if self._is_discord_configured():
-            channels.append(NotificationChannel.DISCORD)
-        # AstrBot
-        if self._is_astrbot_configured():
-            channels.append(NotificationChannel.ASTRBOT)
-        return channels
+        return [NotificationChannel.EMAIL] if self._is_email_configured() else []
 
     def is_available(self) -> bool:
         """检查通知服务是否可用（至少有一个渠道或上下文渠道）"""
@@ -230,11 +140,8 @@ class NotificationService(
 
     # ===== Context channel =====
     def _has_context_channel(self) -> bool:
-        """判断是否存在基于消息上下文的临时渠道（如钉钉会话、飞书会话）"""
-        return (
-            self._extract_dingtalk_session_webhook() is not None
-            or self._extract_feishu_reply_info() is not None
-        )
+        """Email-only mode does not support context chat reply channels."""
+        return False
 
     def _extract_dingtalk_session_webhook(self) -> Optional[str]:
         """从来源消息中提取钉钉会话 Webhook（用于 Stream 模式回复）"""
@@ -276,7 +183,8 @@ class NotificationService(
         Args:
             content: Markdown 格式内容
         """
-        return self._send_via_source_context(content)
+        _ = content
+        return False
     
     def _send_via_source_context(self, content: str) -> bool:
         """
@@ -284,33 +192,8 @@ class NotificationService(
         
         主要用于从机器人 Stream 模式触发的任务，确保结果能回到触发的会话。
         """
-        success = False
-        
-        # 尝试钉钉会话
-        session_webhook = self._extract_dingtalk_session_webhook()
-        if session_webhook:
-            try:
-                if self._send_dingtalk_chunked(session_webhook, content, max_bytes=20000):
-                    logger.info("已通过钉钉会话（Stream）推送报告")
-                    success = True
-                else:
-                    logger.error("钉钉会话（Stream）推送失败")
-            except Exception as e:
-                logger.error(f"钉钉会话（Stream）推送异常: {e}")
-
-        # 尝试飞书会话
-        feishu_info = self._extract_feishu_reply_info()
-        if feishu_info:
-            try:
-                if self._send_feishu_stream_reply(feishu_info["chat_id"], content):
-                    logger.info("已通过飞书会话（Stream）推送报告")
-                    success = True
-                else:
-                    logger.error("飞书会话（Stream）推送失败")
-            except Exception as e:
-                logger.error(f"飞书会话（Stream）推送异常: {e}")
-
-        return success
+        _ = content
+        return False
 
     def _send_feishu_stream_reply(self, chat_id: str, content: str) -> bool:
         """
@@ -1349,12 +1232,6 @@ class NotificationService(
         """
         if channel.value not in self._markdown_to_image_channels or image_bytes is None:
             return False
-        if channel == NotificationChannel.WECHAT and len(image_bytes) > WECHAT_IMAGE_MAX_BYTES:
-            logger.warning(
-                "企业微信图片超限 (%d bytes)，回退为 Markdown 文本发送",
-                len(image_bytes),
-            )
-            return False
         return True
 
     def send(
@@ -1382,12 +1259,7 @@ class NotificationService(
         Returns:
             是否至少有一个渠道发送成功
         """
-        context_success = self.send_to_context(content)
-
         if not self._available_channels:
-            if context_success:
-                logger.info("已通过消息上下文渠道完成推送（无其他通知渠道）")
-                return True
             logger.warning("通知服务不可用，跳过推送")
             return False
 
@@ -1421,72 +1293,20 @@ class NotificationService(
                     hint,
                 )
 
-        channel_names = self.get_channel_names()
-        logger.info(f"正在向 {len(self._available_channels)} 个渠道发送通知：{channel_names}")
+        receivers = None
+        if email_send_to_all and self._stock_email_groups:
+            receivers = self.get_all_email_receivers()
+        elif email_stock_codes and self._stock_email_groups:
+            receivers = self.get_receivers_for_stocks(email_stock_codes)
 
-        success_count = 0
-        fail_count = 0
+        use_image = self._should_use_image_for_channel(NotificationChannel.EMAIL, image_bytes)
+        if use_image:
+            result = self._send_email_with_inline_image(image_bytes, receivers=receivers)
+        else:
+            result = self.send_to_email(content, receivers=receivers)
 
-        for channel in self._available_channels:
-            channel_name = ChannelDetector.get_channel_name(channel)
-            use_image = self._should_use_image_for_channel(channel, image_bytes)
-            try:
-                if channel == NotificationChannel.WECHAT:
-                    if use_image:
-                        result = self._send_wechat_image(image_bytes)
-                    else:
-                        result = self.send_to_wechat(content)
-                elif channel == NotificationChannel.FEISHU:
-                    result = self.send_to_feishu(content)
-                elif channel == NotificationChannel.TELEGRAM:
-                    if use_image:
-                        result = self._send_telegram_photo(image_bytes)
-                    else:
-                        result = self.send_to_telegram(content)
-                elif channel == NotificationChannel.EMAIL:
-                    receivers = None
-                    if email_send_to_all and self._stock_email_groups:
-                        receivers = self.get_all_email_receivers()
-                    elif email_stock_codes and self._stock_email_groups:
-                        receivers = self.get_receivers_for_stocks(email_stock_codes)
-                    if use_image:
-                        result = self._send_email_with_inline_image(
-                            image_bytes, receivers=receivers
-                        )
-                    else:
-                        result = self.send_to_email(content, receivers=receivers)
-                elif channel == NotificationChannel.PUSHOVER:
-                    result = self.send_to_pushover(content)
-                elif channel == NotificationChannel.PUSHPLUS:
-                    result = self.send_to_pushplus(content)
-                elif channel == NotificationChannel.SERVERCHAN3:
-                    result = self.send_to_serverchan3(content)
-                elif channel == NotificationChannel.CUSTOM:
-                    if use_image:
-                        result = self._send_custom_webhook_image(
-                            image_bytes, fallback_content=content
-                        )
-                    else:
-                        result = self.send_to_custom(content)
-                elif channel == NotificationChannel.DISCORD:
-                    result = self.send_to_discord(content)
-                elif channel == NotificationChannel.ASTRBOT:
-                    result = self.send_to_astrbot(content)
-                else:
-                    logger.warning(f"不支持的通知渠道: {channel}")
-                    result = False
-
-                if result:
-                    success_count += 1
-                else:
-                    fail_count += 1
-
-            except Exception as e:
-                logger.error(f"{channel_name} 发送失败: {e}")
-                fail_count += 1
-
-        logger.info(f"通知发送完成：成功 {success_count} 个，失败 {fail_count} 个")
-        return success_count > 0 or context_success
+        logger.info("通知发送完成：email=%s", "success" if result else "failed")
+        return result
    
     def save_report_to_file(
         self, 

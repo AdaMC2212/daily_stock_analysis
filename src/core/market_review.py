@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 ===================================
-股票智能分析系统 - 大盘复盘模块（支持 A 股 / 美股）
+股票智能分析系统 - 大盘复盘模块（US-only）
 ===================================
 
 职责：
-1. 根据 MARKET_REVIEW_REGION 配置选择市场区域（cn / us / both）
+1. 根据 MARKET_REVIEW_REGION 配置选择市场区域（us）
 2. 执行大盘复盘分析并生成复盘报告
 3. 保存和发送复盘报告
 """
@@ -51,40 +51,18 @@ def run_market_review(
     region = (
         override_region
         if override_region is not None
-        else (getattr(config, 'market_review_region', 'cn') or 'cn')
+        else (getattr(config, 'market_review_region', 'us') or 'us')
     )
-    if region not in ('cn', 'us', 'both'):
-        region = 'cn'
+    if region != 'us':
+        region = 'us'
 
     try:
-        if region == 'both':
-            # 顺序执行 A 股 + 美股，合并报告
-            cn_analyzer = MarketAnalyzer(
-                search_service=search_service, analyzer=analyzer, region='cn'
-            )
-            us_analyzer = MarketAnalyzer(
-                search_service=search_service, analyzer=analyzer, region='us'
-            )
-            logger.info("生成 A 股大盘复盘报告...")
-            cn_report = cn_analyzer.run_daily_review()
-            logger.info("生成美股大盘复盘报告...")
-            us_report = us_analyzer.run_daily_review()
-            review_report = ''
-            if cn_report:
-                review_report = f"# A股大盘复盘\n\n{cn_report}"
-            if us_report:
-                if review_report:
-                    review_report += "\n\n---\n\n> 以下为美股大盘复盘\n\n"
-                review_report += f"# 美股大盘复盘\n\n{us_report}"
-            if not review_report:
-                review_report = None
-        else:
-            market_analyzer = MarketAnalyzer(
-                search_service=search_service,
-                analyzer=analyzer,
-                region=region,
-            )
-            review_report = market_analyzer.run_daily_review()
+        market_analyzer = MarketAnalyzer(
+            search_service=search_service,
+            analyzer=analyzer,
+            region=region,
+        )
+        review_report = market_analyzer.run_daily_review()
         
         if review_report:
             # 保存报告到文件

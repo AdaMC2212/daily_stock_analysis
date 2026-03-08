@@ -252,8 +252,8 @@ class Config:
     schedule_run_immediately: bool = True     # 启动时是否立即执行一次
     run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
     market_review_enabled: bool = True        # 是否启用大盘复盘
-    # 大盘复盘市场区域：cn(A股)、us(美股)、both(两者)，us 适合仅关注美股的用户
-    market_review_region: str = "cn"
+    # US-only mode: market review region is fixed to us.
+    market_review_region: str = "us"
     # 交易日检查：默认启用，非交易日跳过执行；设为 false 或 --force-run 可强制执行（Issue #373）
     trading_day_check_enabled: bool = True
 
@@ -412,7 +412,7 @@ class Config:
         
         # 如果没有配置，使用默认的示例股票
         if not stock_list:
-            stock_list = ['600519', '000001', '300750']
+            stock_list = ['AAPL', 'MSFT', 'NVDA']
         
         # === LiteLLM multi-key parsing ===
         # GEMINI_API_KEYS (comma-separated) > GEMINI_API_KEY (single)
@@ -662,7 +662,7 @@ class Config:
             run_immediately=os.getenv('RUN_IMMEDIATELY', 'true').lower() == 'true',
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
             market_review_region=cls._parse_market_review_region(
-                os.getenv('MARKET_REVIEW_REGION', 'cn')
+                os.getenv('MARKET_REVIEW_REGION', 'us')
             ),
             trading_day_check_enabled=os.getenv('TRADING_DAY_CHECK_ENABLED', 'true').lower() != 'false',
             webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',
@@ -936,15 +936,15 @@ class Config:
 
     @classmethod
     def _parse_market_review_region(cls, value: str) -> str:
-        """解析大盘复盘市场区域，非法值记录警告后回退为 cn"""
+        """US-only mode: force MARKET_REVIEW_REGION to us."""
         import logging
-        v = (value or 'cn').strip().lower()
-        if v in ('cn', 'us', 'both'):
-            return v
-        logging.getLogger(__name__).warning(
-            f"MARKET_REVIEW_REGION 配置值 '{value}' 无效，已回退为默认值 'cn'（合法值：cn / us / both）"
-        )
-        return 'cn'
+        v = (value or 'us').strip().lower()
+        if v != 'us':
+            logging.getLogger(__name__).warning(
+                "MARKET_REVIEW_REGION=%s ignored in US-only mode; forcing 'us'",
+                value,
+            )
+        return 'us'
 
     @classmethod
     def _parse_md2img_engine(cls, value: str) -> str:
@@ -1096,23 +1096,12 @@ class Config:
             ))
 
         # --- Notification channels ---
-        has_notification = bool(
-            self.wechat_webhook_url
-            or self.feishu_webhook_url
-            or (self.telegram_bot_token and self.telegram_chat_id)
-            or (self.email_sender and self.email_password)
-            or (self.pushover_user_key and self.pushover_api_token)
-            or self.pushplus_token
-            or self.serverchan3_sendkey
-            or self.custom_webhook_urls
-            or (self.discord_bot_token and self.discord_main_channel_id)
-            or self.discord_webhook_url
-        )
+        has_notification = bool(self.email_sender and self.email_password)
         if not has_notification:
             issues.append(ConfigIssue(
                 severity="warning",
                 message="未配置通知渠道，将不发送推送通知",
-                field="WECHAT_WEBHOOK_URL",
+                field="EMAIL_SENDER",
             ))
 
         # --- Deprecated field migration hints ---
