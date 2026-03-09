@@ -123,7 +123,7 @@ class BaseFetcher(ABC):
         stock_code: str,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
-        days: int = 30,
+        days: int = 252,
     ) -> pd.DataFrame:
         """Fetch, normalize, clean, and enrich daily data."""
         if end_date is None:
@@ -167,15 +167,24 @@ class BaseFetcher(ABC):
         df["ma5"] = df["close"].rolling(window=5, min_periods=1).mean()
         df["ma10"] = df["close"].rolling(window=10, min_periods=1).mean()
         df["ma20"] = df["close"].rolling(window=20, min_periods=1).mean()
+        df["ma60"] = df["close"].rolling(window=60, min_periods=1).mean()
+        df["ma120"] = df["close"].rolling(window=120, min_periods=1).mean()
+        df["ma200"] = df["close"].rolling(window=200, min_periods=1).mean()
+        df["high_52w"] = df["close"].rolling(window=252, min_periods=1).max()
+        df["low_52w"] = df["close"].rolling(window=252, min_periods=1).min()
 
         avg_volume_5 = df["volume"].rolling(window=5, min_periods=1).mean()
         df["volume_ratio"] = df["volume"] / avg_volume_5.shift(1)
         df["volume_ratio"] = df["volume_ratio"].fillna(1.0)
 
-        for col in ["ma5", "ma10", "ma20", "volume_ratio"]:
+        for col in ["ma5", "ma10", "ma20", "ma60", "ma120", "ma200", "high_52w", "low_52w", "volume_ratio"]:
             df[col] = df[col].round(2)
 
         return df
+
+    def get_fundamentals(self, stock_code: str) -> Optional[Dict[str, Any]]:
+        """Return provider-specific fundamentals when available."""
+        return None
 
 
 class DataFetcherManager:
@@ -216,7 +225,7 @@ class DataFetcherManager:
         stock_code: str,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
-        days: int = 30,
+        days: int = 252,
     ) -> Tuple[pd.DataFrame, str]:
         """Fetch daily history using the retained provider stack."""
         stock_code = normalize_stock_code(stock_code)
@@ -247,6 +256,21 @@ class DataFetcherManager:
                     logger.warning("Realtime quote fetch failed for %s via %s: %s", stock_code, fetcher.name, exc)
 
         return None
+
+    def get_fundamentals(self, stock_code: str) -> Dict[str, Any]:
+        """Fetch fundamentals using the retained provider stack when supported."""
+        stock_code = normalize_stock_code(stock_code)
+
+        for fetcher in self._fetchers:
+            if hasattr(fetcher, "get_fundamentals"):
+                try:
+                    data = fetcher.get_fundamentals(stock_code)
+                    if data:
+                        return data
+                except Exception as exc:
+                    logger.warning("Fundamental fetch failed for %s via %s: %s", stock_code, fetcher.name, exc)
+
+        return {}
 
     def get_chip_distribution(self, stock_code: str):
         """Chip distribution is not part of the current US-only provider stack."""

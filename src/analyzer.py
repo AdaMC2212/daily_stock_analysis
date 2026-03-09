@@ -16,11 +16,29 @@ import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple
 
-import litellm
-from json_repair import repair_json
-from litellm import Router
+try:
+    import litellm
+    from litellm import Router
+except ImportError:  # pragma: no cover - optional dependency for test/runtime flexibility
+    litellm = None
 
-from src.agent.llm_adapter import get_thinking_extra_body
+    class Router:  # type: ignore[override]
+        """Fallback Router placeholder when litellm is unavailable."""
+
+        def __init__(self, *args, **kwargs):
+            raise ImportError("litellm is not installed")
+
+try:
+    from json_repair import repair_json
+except ImportError:  # pragma: no cover - optional dependency for test/runtime flexibility
+    def repair_json(text: str) -> str:
+        return text
+
+try:
+    from src.agent.llm_adapter import get_thinking_extra_body
+except ImportError:  # pragma: no cover - optional dependency for test/runtime flexibility
+    def get_thinking_extra_body(*args, **kwargs):
+        return {}
 from src.config import Config, get_config, get_api_keys_for_model, extra_litellm_params
 
 logger = logging.getLogger(__name__)
@@ -156,10 +174,11 @@ class AnalysisResult:
 
     # ========== 核心指标 ==========
     sentiment_score: int  # 综合评分 0-100 (>70强烈看多, >60看多, 40-60震荡, <40看空)
-    trend_prediction: str  # 趋势预测：强烈看多/看多/震荡/看空/强烈看空
-    operation_advice: str  # 操作建议：买入/加仓/持有/减仓/卖出/观望
+    trend_prediction: str  # Trend prediction summary
+    operation_advice: str  # Long-term advice: Accumulate/Hold/Trim/Exit/Watch
     decision_type: str = "hold"  # 决策类型：buy/hold/sell（用于统计）
     confidence_level: str = "中"  # 置信度：高/中/低
+    time_horizon: str = "long_term"  # long_term/medium_term/short_term
 
     # ========== 决策仪表盘 (新增) ==========
     dashboard: Optional[Dict[str, Any]] = None  # 完整的决策仪表盘数据
@@ -216,6 +235,7 @@ class AnalysisResult:
             'operation_advice': self.operation_advice,
             'decision_type': self.decision_type,
             'confidence_level': self.confidence_level,
+            'time_horizon': self.time_horizon,
             'dashboard': self.dashboard,  # 决策仪表盘数据
             'trend_analysis': self.trend_analysis,
             'short_term_outlook': self.short_term_outlook,
@@ -279,6 +299,11 @@ class AnalysisResult:
     def get_emoji(self) -> str:
         """根据操作建议返回对应 emoji"""
         emoji_map = {
+            'Accumulate': '🟢',
+            'Hold': '🟡',
+            'Watch': '⚪',
+            'Trim': '🟠',
+            'Exit': '🔴',
             '买入': '🟢',
             '加仓': '🟢',
             '强烈买入': '💚',
@@ -314,7 +339,7 @@ class AnalysisResult:
 
     def get_confidence_stars(self) -> str:
         """返回置信度星级"""
-        star_map = {'高': '⭐⭐⭐', '中': '⭐⭐', '低': '⭐'}
+        star_map = {'高': '⭐⭐⭐', '中': '⭐⭐', '低': '⭐', 'High': '⭐⭐⭐', 'Medium': '⭐⭐', 'Low': '⭐'}
         return star_map.get(self.confidence_level, '⭐⭐')
 
 
@@ -525,6 +550,53 @@ class GeminiAnalyzer:
 4. **检查清单可视化**：用 ✅⚠️❌ 明确显示每项检查结果
 5. **风险优先级**：舆情中的风险点要醒目标出"""
 
+    SYSTEM_PROMPT = """You are a long-term equity investor focused on holding quality US stocks for 5-10 years.
+
+Priorities:
+1. Business quality: revenue and earnings durability, moat, management execution.
+2. Valuation: PE, forward PE, PEG, margins, debt load, and whether growth is already priced in.
+3. Technicals only as entry and risk tools, not as the primary thesis.
+4. Macro context: rates, volatility, dollar strength, sector tailwinds/headwinds, and earnings revision risk.
+5. Position sizing: prefer accumulation zones and staged entries over single all-in calls.
+6. Thesis discipline: explain what would make you hold, trim, or exit over a multi-quarter horizon.
+
+Output strict JSON only. Required fields:
+- stock_name
+- sentiment_score
+- trend_prediction
+- operation_advice: Accumulate/Hold/Trim/Exit/Watch
+- decision_type: buy/hold/sell
+- confidence_level: High/Medium/Low
+- time_horizon: long_term/medium_term/short_term
+- dashboard
+- analysis_summary
+- key_points
+- risk_warning
+- buy_reason
+- trend_analysis
+- short_term_outlook
+- medium_term_outlook
+- technical_analysis
+- ma_analysis
+- volume_analysis
+- pattern_analysis
+- fundamental_analysis
+- sector_position
+- company_highlights
+- news_summary
+- market_sentiment
+- hot_topics
+- search_performed
+- data_sources
+
+Scoring guidance:
+- 80-100: high-quality compounder with durable thesis and acceptable entry.
+- 60-79: attractive business, but valuation or execution risk requires staged accumulation.
+- 40-59: mixed setup, monitor and wait for better valuation or confirmation.
+- 0-39: thesis deterioration, valuation excess without support, or clear exit conditions.
+
+Explain clearly whether a signal is short-term noise or long-term relevant."""
+
     def __init__(self, api_key: Optional[str] = None):
         """Initialize LLM Analyzer via LiteLLM.
 
@@ -545,6 +617,9 @@ class GeminiAnalyzer:
 
     def _init_litellm(self) -> None:
         """Initialize litellm Router from channels / YAML / legacy keys."""
+        if litellm is None:
+            logger.warning("Analyzer LLM: litellm is not installed")
+            return
         config = get_config()
         litellm_model = config.litellm_model
         if not litellm_model:
@@ -681,7 +756,7 @@ class GeminiAnalyzer:
     def generate_text(
         self,
         prompt: str,
-        max_tokens: int = 2048,
+        max_tokens: int = 4096,
         temperature: float = 0.7,
     ) -> Optional[str]:
         """Public entry point for free-form text generation.
@@ -754,9 +829,10 @@ class GeminiAnalyzer:
                 code=code,
                 name=name,
                 sentiment_score=50,
-                trend_prediction='震荡',
-                operation_advice='持有',
-                confidence_level='低',
+                trend_prediction='Neutral',
+                operation_advice='Watch',
+                confidence_level='Low',
+                time_horizon='long_term',
                 analysis_summary='AI 分析功能未启用（未配置 API Key）',
                 risk_warning='请配置 LLM API Key（GEMINI_API_KEY/ANTHROPIC_API_KEY/OPENAI_API_KEY）后重试',
                 success=False,
@@ -783,7 +859,7 @@ class GeminiAnalyzer:
             # 设置生成配置
             generation_config = {
                 "temperature": config.gemini_temperature,
-                "max_output_tokens": 8192,
+                "max_output_tokens": 12288,
             }
 
             logger.info(f"[LLM调用] 开始调用 {model_name}...")
@@ -818,9 +894,10 @@ class GeminiAnalyzer:
                 code=code,
                 name=name,
                 sentiment_score=50,
-                trend_prediction='震荡',
-                operation_advice='持有',
-                confidence_level='低',
+                trend_prediction='Neutral',
+                operation_advice='Watch',
+                confidence_level='Low',
+                time_horizon='long_term',
                 analysis_summary=f'分析过程出错: {str(e)[:100]}',
                 risk_warning='分析失败，请稍后重试或手动分析',
                 success=False,
@@ -902,6 +979,29 @@ class GeminiAnalyzer:
 | 总市值 | {self._format_amount(rt.get('total_mv'))} | |
 | 流通市值 | {self._format_amount(rt.get('circ_mv'))} | |
 | 60日涨跌幅 | {rt.get('change_60d', 'N/A')}% | 中期表现 |
+"""
+
+        if 'fundamentals' in context:
+            fd = context['fundamentals']
+            prompt += f"""
+### 长期投资基本面
+| 指标 | 数值 |
+|------|------|
+| PE | {fd.get('pe_ratio', 'N/A')} |
+| Forward PE | {fd.get('forward_pe', 'N/A')} |
+| PEG | {fd.get('peg_ratio', 'N/A')} |
+| EPS Growth | {fd.get('eps_growth', 'N/A')}% |
+| Revenue Growth | {fd.get('revenue_growth', 'N/A')}% |
+| Revenue Trend | {fd.get('revenue_trend', 'N/A')} |
+| Debt/Equity | {fd.get('debt_to_equity', 'N/A')} |
+| Gross Margin | {fd.get('gross_margin', 'N/A')}% |
+| Profit Margin | {fd.get('profit_margin', 'N/A')}% |
+| 52W High | {fd.get('high_52w', 'N/A')} |
+| 52W Low | {fd.get('low_52w', 'N/A')} |
+| Relative Strength vs SPY | {fd.get('relative_strength_vs_spy', 'N/A')}% |
+| Sector | {fd.get('sector', 'N/A')} |
+| Industry | {fd.get('industry', 'N/A')} |
+| Earnings Date | {fd.get('earnings_date', 'N/A')} |
 """
         
         # 添加筹码分布数据
@@ -990,7 +1090,9 @@ class GeminiAnalyzer:
 
 ## ✅ 分析任务
 
-请为 **{stock_name}({code})** 生成【决策仪表盘】，严格按照 JSON 格式输出。
+请为 **{stock_name}({code})** 生成面向 5-10 年持有框架的【决策仪表盘】，严格按照 JSON 格式输出。
+`operation_advice` 只能使用 `Accumulate / Hold / Trim / Exit / Watch`。
+`time_horizon` 必须明确说明当前结论属于 `long_term / medium_term / short_term` 中哪一种。
 """
         if context.get('is_index_etf'):
             prompt += """
@@ -1007,11 +1109,11 @@ class GeminiAnalyzer:
 如果上方显示的股票名称为"股票{code}"或不正确，请在分析开头**明确输出该股票的正确中文全称**。
 
 ### 重点关注（必须明确回答）：
-1. ❓ 是否满足 MA5>MA10>MA20 多头排列？
-2. ❓ 当前乖离率是否在安全范围内（<5%）？—— 超过5%必须标注"严禁追高"
-3. ❓ 量能是否配合（缩量回调/放量突破）？
-4. ❓ 筹码结构是否健康？
-5. ❓ 消息面有无重大利空？（减持、处罚、业绩变脸等）
+1. ❓ 长期商业质量是否支撑 5-10 年持有？
+2. ❓ 当前估值是否需要分批建仓，而不是一次性追价？
+3. ❓ 技术面是否只是在提示更好的进入区间，而不是改变长期 thesis？
+4. ❓ 未来两个财报周期内最关键的 thesis 验证点是什么？
+5. ❓ 哪些条件会触发 Hold / Trim / Exit？
 
 ### 决策仪表盘要求：
 - **股票名称**：必须输出正确的中文全称（如"贵州茅台"而非"股票600519"）
@@ -1112,6 +1214,39 @@ class GeminiAnalyzer:
 
         return snapshot
 
+    @staticmethod
+    def _normalize_operation_advice(advice: str) -> str:
+        """Map legacy short-term labels into long-term portfolio actions."""
+        mapping = {
+            "买入": "Accumulate",
+            "加仓": "Accumulate",
+            "强烈买入": "Accumulate",
+            "持有": "Hold",
+            "观望": "Watch",
+            "减仓": "Trim",
+            "卖出": "Exit",
+            "强烈卖出": "Exit",
+            "accumulate": "Accumulate",
+            "hold": "Hold",
+            "trim": "Trim",
+            "exit": "Exit",
+            "watch": "Watch",
+        }
+        normalized = (advice or "").strip()
+        return mapping.get(normalized, normalized or "Watch")
+
+    @staticmethod
+    def _normalize_decision_type(decision_type: str, operation_advice: str) -> str:
+        normalized = (decision_type or "").strip().lower()
+        if normalized in {"buy", "hold", "sell"}:
+            return normalized
+        normalized_advice = GeminiAnalyzer._normalize_operation_advice(operation_advice)
+        if normalized_advice == "Accumulate":
+            return "buy"
+        if normalized_advice in {"Trim", "Exit"}:
+            return "sell"
+        return "hold"
+
     def _parse_response(
         self, 
         response_text: str, 
@@ -1154,25 +1289,19 @@ class GeminiAnalyzer:
 
                 # 解析所有字段，使用默认值防止缺失
                 # 解析 decision_type，如果没有则根据 operation_advice 推断
-                decision_type = data.get('decision_type', '')
-                if not decision_type:
-                    op = data.get('operation_advice', '持有')
-                    if op in ['买入', '加仓', '强烈买入']:
-                        decision_type = 'buy'
-                    elif op in ['卖出', '减仓', '强烈卖出']:
-                        decision_type = 'sell'
-                    else:
-                        decision_type = 'hold'
+                operation_advice = self._normalize_operation_advice(data.get('operation_advice', 'Watch'))
+                decision_type = self._normalize_decision_type(data.get('decision_type', ''), operation_advice)
                 
                 return AnalysisResult(
                     code=code,
                     name=name,
                     # 核心指标
                     sentiment_score=int(data.get('sentiment_score', 50)),
-                    trend_prediction=data.get('trend_prediction', '震荡'),
-                    operation_advice=data.get('operation_advice', '持有'),
+                    trend_prediction=data.get('trend_prediction', 'Neutral'),
+                    operation_advice=operation_advice,
                     decision_type=decision_type,
-                    confidence_level=data.get('confidence_level', '中'),
+                    confidence_level=data.get('confidence_level', 'Medium'),
+                    time_horizon=data.get('time_horizon', 'long_term'),
                     # 决策仪表盘
                     dashboard=dashboard,
                     # 走势分析
@@ -1240,8 +1369,8 @@ class GeminiAnalyzer:
         """从纯文本响应中尽可能提取分析信息"""
         # 尝试识别关键词来判断情绪
         sentiment_score = 50
-        trend = '震荡'
-        advice = '持有'
+        trend = 'Neutral'
+        advice = 'Watch'
         
         text_lower = response_text.lower()
         
@@ -1254,13 +1383,13 @@ class GeminiAnalyzer:
         
         if positive_count > negative_count + 1:
             sentiment_score = 65
-            trend = '看多'
-            advice = '买入'
+            trend = 'Constructive'
+            advice = 'Accumulate'
             decision_type = 'buy'
         elif negative_count > positive_count + 1:
             sentiment_score = 35
-            trend = '看空'
-            advice = '卖出'
+            trend = 'Cautious'
+            advice = 'Exit'
             decision_type = 'sell'
         else:
             decision_type = 'hold'
@@ -1275,7 +1404,8 @@ class GeminiAnalyzer:
             trend_prediction=trend,
             operation_advice=advice,
             decision_type=decision_type,
-            confidence_level='低',
+            confidence_level='Low',
+            time_horizon='long_term',
             analysis_summary=summary,
             key_points='JSON解析失败，仅供参考',
             risk_warning='分析结果可能不准确，建议结合其他信息判断',

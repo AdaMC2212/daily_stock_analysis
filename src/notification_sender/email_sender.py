@@ -131,7 +131,7 @@ class EmailSender:
             # 生成主题
             if subject is None:
                 date_str = datetime.now().strftime('%Y-%m-%d')
-                subject = f"📈 股票智能分析报告 - {date_str}"
+                subject = f"US Stock Report - {date_str}"
             
             # 将 Markdown 转换为简单 HTML
             html_content = markdown_to_html_document(content)
@@ -191,7 +191,7 @@ class EmailSender:
             return False
 
     def _send_email_with_inline_image(
-        self, image_bytes: bytes, receivers: Optional[List[str]] = None
+        self, image_bytes: bytes, receivers: Optional[List[str]] = None, subject: Optional[str] = None
     ) -> bool:
         """Send email with inline image attachment (Issue #289)."""
         if not self._is_email_configured():
@@ -200,8 +200,9 @@ class EmailSender:
         password = self._email_config['password']
         receivers = receivers or self._email_config['receivers']
         try:
-            date_str = datetime.now().strftime('%Y-%m-%d')
-            subject = f"📈 股票智能分析报告 - {date_str}"
+            if subject is None:
+                date_str = datetime.now().strftime('%Y-%m-%d')
+                subject = f"US Stock Report - {date_str}"
             msg = MIMEMultipart('related')
             msg['Subject'] = Header(subject, 'utf-8')
             msg['From'] = formataddr(

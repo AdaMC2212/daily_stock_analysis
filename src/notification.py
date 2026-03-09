@@ -553,6 +553,11 @@ class NotificationService(
 
         # Advice-first lookup (exact match takes priority)
         advice_map = {
+            'Accumulate': ('Accumulate', '🟢', '加仓'),
+            'Hold': ('Hold', '🟡', '持有'),
+            'Watch': ('Watch', '⚪', '观察'),
+            'Trim': ('Trim', '🟠', '减仓'),
+            'Exit': ('Exit', '🔴', '退出'),
             '强烈买入': ('强烈买入', '💚', '强买'),
             '买入': ('买入', '🟢', '买入'),
             '加仓': ('买入', '🟢', '买入'),
@@ -580,6 +585,24 @@ class NotificationService(
             return ('卖出', '🔴', '卖出')
         else:
             return ('观望', '⚪', '观望')
+
+    def generate_email_subject(self, results: List[AnalysisResult], report_date: Optional[str] = None) -> str:
+        """Build a compact subject line highlighting the top actionable names."""
+        if report_date is None:
+            report_date = datetime.now().strftime('%Y-%m-%d')
+        if not results:
+            return f"US Stock Report - {report_date}"
+
+        actionable = [r for r in results if getattr(r, 'operation_advice', '') in ('Accumulate', 'Trim', 'Exit', '买入', '加仓', '减仓', '卖出')]
+        ranked = sorted(actionable or results, key=lambda x: x.sentiment_score, reverse=True)[:3]
+        parts = []
+        symbol_map = {'Accumulate': '⬆️', 'Hold': '⚪', 'Watch': '👀', 'Trim': '↘️', 'Exit': '⛔'}
+        legacy_map = {'买入': '⬆️', '加仓': '⬆️', '持有': '⚪', '观望': '👀', '减仓': '↘️', '卖出': '⛔'}
+        for result in ranked:
+            advice = result.operation_advice
+            marker = symbol_map.get(advice, legacy_map.get(advice, '⚪'))
+            parts.append(f"{result.code} {marker} {advice}")
+        return f"US Stock Report - {' | '.join(parts)} | {report_date}"
     
     def generate_dashboard_report(
         self,
@@ -615,6 +638,39 @@ class NotificationService(
             f"> 共分析 **{len(results)}** 只股票 | 🟢买入:{buy_count} 🟡观望:{hold_count} 🔴卖出:{sell_count}",
             "",
         ]
+
+        actionable_results = [
+            r for r in sorted_results
+            if getattr(r, 'operation_advice', '') in ('Accumulate', 'Trim', 'Exit', '买入', '加仓', '减仓', '卖出')
+        ]
+        if actionable_results:
+            report_lines.extend([
+                "## Action Required",
+                "",
+            ])
+            for r in actionable_results:
+                _, signal_emoji, _ = self._get_signal_level(r)
+                report_lines.append(
+                    f"- {signal_emoji} **{self._escape_md(r.name)}({r.code})**: {r.operation_advice} | "
+                    f"评分 {r.sentiment_score} | {r.analysis_summary[:90]}"
+                )
+            report_lines.extend(["", "---", ""])
+
+        if results:
+            report_lines.extend([
+                "## Portfolio Scorecard",
+                "",
+                "| Ticker | Signal | Score | Time Horizon | Key Reason |",
+                "|------|--------|-------|--------------|------------|",
+            ])
+            for r in sorted_results:
+                signal_text, _, _ = self._get_signal_level(r)
+                reason = (r.buy_reason or r.analysis_summary or "").replace("\n", " ")[:80]
+                report_lines.append(
+                    f"| {r.code} | {signal_text} | {r.sentiment_score} | "
+                    f"{getattr(r, 'time_horizon', 'N/A')} | {reason or 'N/A'} |"
+                )
+            report_lines.extend(["", "---", ""])
 
         # === 新增：分析结果摘要 (Issue #112) ===
         if results:
@@ -1231,7 +1287,8 @@ class NotificationService(
         self,
         content: str,
         email_stock_codes: Optional[List[str]] = None,
-        email_send_to_all: bool = False
+        email_send_to_all: bool = False,
+        email_subject: Optional[str] = None,
     ) -> bool:
         """
         统一发送接口 - 向所有已配置的渠道发送
@@ -1248,6 +1305,7 @@ class NotificationService(
             content: 消息内容（Markdown 格式）
             email_stock_codes: 股票代码列表（可选，用于邮件渠道路由到对应分组邮箱，Issue #268）
             email_send_to_all: 邮件是否发往所有配置邮箱（用于大盘复盘等无股票归属的内容）
+            email_subject: Optional custom email subject
 
         Returns:
             是否至少有一个渠道发送成功
@@ -1294,9 +1352,9 @@ class NotificationService(
 
         use_image = self._should_use_image_for_channel(NotificationChannel.EMAIL, image_bytes)
         if use_image:
-            result = self._send_email_with_inline_image(image_bytes, receivers=receivers)
+            result = self._send_email_with_inline_image(image_bytes, receivers=receivers, subject=email_subject)
         else:
-            result = self.send_to_email(content, receivers=receivers)
+            result = self.send_to_email(content, subject=email_subject, receivers=receivers)
 
         logger.info("通知发送完成：email=%s", "success" if result else "failed")
         return result

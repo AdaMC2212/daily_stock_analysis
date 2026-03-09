@@ -135,8 +135,9 @@ class Config:
     serpapi_keys: List[str] = field(default_factory=list)  # SerpAPI Keys
 
     # === 新闻与分析筛选配置 ===
-    news_max_age_days: int = 3   # 新闻最大时效（天）
+    news_max_age_days: int = 7   # 新闻最大时效（天）
     bias_threshold: float = 5.0  # 乖离率阈值（%），超过此值提示不追高
+    historical_lookback_days: int = 252  # Historical context window for long-term analysis
 
     # === Agent 模式配置 ===
     agent_mode: bool = False
@@ -245,7 +246,9 @@ class Config:
     
     # === 定时任务配置 ===
     schedule_enabled: bool = False            # 是否启用定时任务
-    schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
+    schedule_time: str = "08:00"              # 每日推送时间（HH:MM 格式）
+    timezone: str = "Asia/Kuala_Lumpur"       # Scheduler/report timezone
+    post_market_delay: int = 0                # Delay after market close before fetching data (minutes)
     schedule_run_immediately: bool = True     # 启动时是否立即执行一次
     run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
     market_review_enabled: bool = True        # 是否启用大盘复盘
@@ -578,7 +581,8 @@ class Config:
             tavily_api_keys=tavily_api_keys,
             brave_api_keys=brave_api_keys,
             serpapi_keys=serpapi_keys,
-            news_max_age_days=max(1, int(os.getenv('NEWS_MAX_AGE_DAYS', '3'))),
+            news_max_age_days=max(1, int(os.getenv('NEWS_MAX_AGE_DAYS', '7'))),
+            historical_lookback_days=max(60, int(os.getenv('HISTORICAL_LOOKBACK_DAYS', '252'))),
             bias_threshold=max(1.0, float(os.getenv('BIAS_THRESHOLD', '5.0'))),
             agent_mode=os.getenv('AGENT_MODE', 'false').lower() == 'true',
             agent_max_steps=int(os.getenv('AGENT_MAX_STEPS', '10')),
@@ -638,7 +642,9 @@ class Config:
             http_proxy=os.getenv('HTTP_PROXY'),
             https_proxy=os.getenv('HTTPS_PROXY'),
             schedule_enabled=os.getenv('SCHEDULE_ENABLED', 'false').lower() == 'true',
-            schedule_time=os.getenv('SCHEDULE_TIME', '18:00'),
+            schedule_time=os.getenv('SCHEDULE_TIME', '08:00'),
+            timezone=os.getenv('TIMEZONE', 'Asia/Kuala_Lumpur'),
+            post_market_delay=max(0, int(os.getenv('POST_MARKET_DELAY', '0'))),
             schedule_run_immediately=os.getenv('SCHEDULE_RUN_IMMEDIATELY', 'true').lower() == 'true',
             run_immediately=os.getenv('RUN_IMMEDIATELY', 'true').lower() == 'true',
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
@@ -1032,6 +1038,24 @@ class Config:
                 severity="info",
                 message="未配置搜索引擎 API Key (Bocha/Tavily/Brave/SerpAPI)，新闻搜索功能将不可用",
                 field="BOCHA_API_KEY",
+            ))
+
+        # --- Schedule / timezone sanity ---
+        if not re.match(r"^\d{2}:\d{2}$", self.schedule_time or ""):
+            issues.append(ConfigIssue(
+                severity="warning",
+                message="SCHEDULE_TIME 格式应为 HH:MM，例如 08:00",
+                field="SCHEDULE_TIME",
+            ))
+
+        try:
+            from zoneinfo import ZoneInfo
+            ZoneInfo(self.timezone)
+        except Exception:
+            issues.append(ConfigIssue(
+                severity="warning",
+                message=f"TIMEZONE={self.timezone} 无法识别，建议使用 IANA 时区名，例如 Asia/Kuala_Lumpur",
+                field="TIMEZONE",
             ))
 
         # --- Notification channels ---

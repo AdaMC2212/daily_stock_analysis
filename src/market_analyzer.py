@@ -75,6 +75,7 @@ class MarketOverview:
     # 板块涨幅榜
     top_sectors: List[Dict] = field(default_factory=list)     # 涨幅前5板块
     bottom_sectors: List[Dict] = field(default_factory=list)  # 跌幅前5板块
+    macro_indicators: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
 
 class MarketAnalyzer:
@@ -131,11 +132,30 @@ class MarketAnalyzer:
         # 3. 获取板块涨跌榜（A 股有，美股暂无）
         if self.profile.has_sector_rankings:
             self._get_sector_rankings(overview)
+
+        if self.region == "us":
+            overview.macro_indicators = self._get_us_macro_indicators()
         
         # 4. 获取北向资金（可选）
         # self._get_north_flow(overview)
         
         return overview
+
+    def _get_us_macro_indicators(self) -> Dict[str, Dict[str, Any]]:
+        """Fetch macro context for the US market review."""
+        indicators = {}
+        for code in ("VIX", "TNX", "DXY"):
+            try:
+                quote = self.data_manager.get_realtime_quote(code)
+                if quote and quote.price is not None:
+                    indicators[code] = {
+                        "name": quote.name or code,
+                        "value": quote.price,
+                        "change_pct": quote.change_pct,
+                    }
+            except Exception as exc:
+                logger.debug("[大盘] 获取宏观指标 %s 失败: %s", code, exc)
+        return indicators
 
     
     def _get_main_indices(self) -> List[MarketIndex]:
@@ -422,6 +442,12 @@ class MarketAnalyzer:
                 title = n.get('title', '')[:50]
                 snippet = n.get('snippet', '')[:100]
             news_text += f"{i}. {title}\n   {snippet}\n"
+        macro_text = ""
+        if overview.macro_indicators:
+            for item in overview.macro_indicators.values():
+                change_pct = item.get("change_pct")
+                suffix = f" ({change_pct:+.2f}%)" if change_pct is not None else ""
+                macro_text += f"- {item.get('name', 'N/A')}: {item.get('value', 'N/A')}{suffix}\n"
         
         # 按 region 组装市场概况与板块区块（美股无涨跌家数、板块数据）
         stats_block = ""
@@ -497,6 +523,9 @@ Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}"""
 ## Market News
 {news_placeholder}
 
+## Macro Indicators
+{macro_text if macro_text else "No macro indicators available"}
+
 {data_no_indices_hint_en}
 
 {self.strategy.to_prompt_block()}
@@ -519,13 +548,16 @@ Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}"""
 ### 4. Sector/Theme Highlights
 (Analyze drivers behind leading/lagging sectors)
 
-### 5. Outlook
-(Short-term view based on price action and news)
+### 5. Macro Cross-Asset Context
+(Explain what VIX, 10Y Treasury yield, and DXY imply for the market.)
 
-### 6. Risk Alerts
+### 6. Outlook
+(Short-term and weekly view based on price action, macro, and news)
+
+### 7. Risk Alerts
 (Key risks to watch)
 
-### 7. Strategy Plan
+### 8. Strategy Plan
 (Provide risk-on/neutral/risk-off stance, position sizing guideline, and one invalidation trigger.)
 
 ---
@@ -630,6 +662,12 @@ Output the report content directly, no extra commentary.
         # 板块信息
         top_text = "、".join([s['name'] for s in overview.top_sectors[:3]])
         bottom_text = "、".join([s['name'] for s in overview.bottom_sectors[:3]])
+        macro_text = "；".join(
+            [
+                f"{item.get('name', code)} {item.get('value', 'N/A')}"
+                for code, item in overview.macro_indicators.items()
+            ]
+        )
         
         # 按 region 决定是否包含涨跌统计和板块（美股无）
         stats_section = ""
@@ -653,13 +691,17 @@ Output the report content directly, no extra commentary.
 """
         market_label = "A股" if self.region == "cn" else "美股"
         strategy_summary = self.strategy.to_markdown_block()
-        report = f"""## {overview.date} 大盘复盘
+        weekly_mode = self.region == "us" and datetime.now().weekday() == 4
+        title = f"{overview.date} {'Week in Review' if weekly_mode else '大盘复盘'}"
+        report = f"""## {title}
 
 ### 一、市场总结
 今日{market_label}市场整体呈现**{market_mood}**态势。
 
 ### 二、主要指数
 {indices_text}
+### 宏观指标
+- {macro_text or "暂无宏观指标数据"}
 {stats_section}
 {sector_section}
 ### 五、风险提示

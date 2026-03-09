@@ -54,6 +54,16 @@ from src.logging_config import setup_logging
 logger = logging.getLogger(__name__)
 
 
+def _apply_post_market_delay(config: Config, args: argparse.Namespace) -> None:
+    """Delay fetches intentionally after market close when configured."""
+    delay_minutes = max(0, int(getattr(config, "post_market_delay", 0) or 0))
+    if delay_minutes <= 0 or getattr(args, "force_run", False):
+        return
+
+    logger.info("Waiting %s minute(s) before fetching post-market data...", delay_minutes)
+    time.sleep(delay_minutes * 60)
+
+
 def parse_arguments() -> argparse.Namespace:
     """解析命令行参数"""
     parser = argparse.ArgumentParser(
@@ -237,7 +247,7 @@ def _compute_trading_day_filter(
         compute_effective_region,
     )
 
-    open_markets = get_open_markets_today()
+    open_markets = get_open_markets_today(run_timezone=getattr(config, "timezone", "UTC"))
     filtered_codes = []
     for code in stock_codes:
         mkt = get_market_for_stock(code)
@@ -288,6 +298,8 @@ def run_full_analysis(
         # 命令行参数 --single-notify 覆盖配置（#55）
         if getattr(args, 'single_notify', False):
             config.single_stock_notify = True
+
+        _apply_post_market_delay(config, args)
 
         # Issue #190: 个股与大盘复盘合并推送
         merge_notification = (
@@ -359,7 +371,14 @@ def run_full_analysis(
             if parts:
                 combined_content = "\n\n---\n\n".join(parts)
                 if pipeline.notifier.is_available():
-                    if pipeline.notifier.send(combined_content, email_send_to_all=True):
+                    subject = pipeline.notifier.generate_email_subject(results) if results else (
+                        f"US Market Review - {datetime.now().strftime('%Y-%m-%d')}"
+                    )
+                    if pipeline.notifier.send(
+                        combined_content,
+                        email_send_to_all=True,
+                        email_subject=subject,
+                    ):
                         logger.info("已合并推送（个股+大盘复盘）")
                     else:
                         logger.warning("合并推送失败")
@@ -549,7 +568,7 @@ def main() -> int:
             effective_region = None
             if not getattr(args, 'force_run', False) and getattr(config, 'trading_day_check_enabled', True):
                 from src.core.trading_calendar import get_open_markets_today, compute_effective_region as _compute_region
-                open_markets = get_open_markets_today()
+                open_markets = get_open_markets_today(run_timezone=getattr(config, 'timezone', 'UTC'))
                 effective_region = _compute_region(
                     getattr(config, 'market_review_region', 'us') or 'us', open_markets
                 )
@@ -593,7 +612,7 @@ def main() -> int:
         # 模式2: 定时任务模式
         if args.schedule or config.schedule_enabled:
             logger.info("模式: 定时任务")
-            logger.info(f"每日执行时间: {config.schedule_time}")
+            logger.info(f"每日执行时间: {config.schedule_time} ({config.timezone})")
 
             # Determine whether to run immediately:
             # Command line arg --no-run-immediately overrides config if present.
@@ -612,7 +631,8 @@ def main() -> int:
             run_with_schedule(
                 task=scheduled_task,
                 schedule_time=config.schedule_time,
-                run_immediately=should_run_immediately
+                run_immediately=should_run_immediately,
+                timezone_name=config.timezone,
             )
             return 0
 

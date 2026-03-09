@@ -1,9 +1,9 @@
 name: Daily US Stock Analysis
 
 on:
-  # Weekdays at 22:30 UTC (aligned to US market close window).
+  # Tuesday-Saturday at 00:00 UTC = 08:00 MYT, covering the prior US trading session post-close.
   schedule:
-    - cron: "30 22 * * 1-5"
+    - cron: "00 00 * * 2-6"
   workflow_dispatch:
     inputs:
       mode:
@@ -31,9 +31,6 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Random startup delay
-        run: sleep $((RANDOM % 60))
-
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -84,6 +81,11 @@ jobs:
           # Runtime
           REPORT_TYPE: ${{ vars.REPORT_TYPE || secrets.REPORT_TYPE || 'simple' }}
           ANALYSIS_DELAY: ${{ vars.ANALYSIS_DELAY || secrets.ANALYSIS_DELAY || '0' }}
+          TIMEZONE: ${{ vars.TIMEZONE || secrets.TIMEZONE || 'Asia/Kuala_Lumpur' }}
+          SCHEDULE_TIME: ${{ vars.SCHEDULE_TIME || secrets.SCHEDULE_TIME || '08:00' }}
+          POST_MARKET_DELAY: ${{ vars.POST_MARKET_DELAY || secrets.POST_MARKET_DELAY || '30' }}
+          HISTORICAL_LOOKBACK_DAYS: ${{ vars.HISTORICAL_LOOKBACK_DAYS || secrets.HISTORICAL_LOOKBACK_DAYS || '252' }}
+          NEWS_MAX_AGE_DAYS: ${{ vars.NEWS_MAX_AGE_DAYS || secrets.NEWS_MAX_AGE_DAYS || '7' }}
           LOG_LEVEL: INFO
           MAX_WORKERS: ${{ vars.MAX_WORKERS || secrets.MAX_WORKERS || '1' }}
           ENABLE_CHIP_DISTRIBUTION: "false"

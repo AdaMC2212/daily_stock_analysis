@@ -15,7 +15,7 @@ It is designed for a simple workflow: define a US watchlist, fetch market data, 
 
 - Analyzes a configurable list of US tickers such as `AAPL`, `MSFT`, `NVDA`, `SPY`, and `QQQ`
 - Generates a US market review for major US indices
-- Uses Gemini to turn technical context and news context into a readable trading report
+- Uses Gemini to turn technical, fundamental, macro, and news context into a readable long-term investing report
 - Sends the final report by email
 - Skips non-trading days by default using US market calendar checks
 - Supports local execution and GitHub Actions scheduling
@@ -27,9 +27,9 @@ The main entrypoint is [main.py](main.py).
 Runtime flow:
 
 1. Load config from `.env` or GitHub Actions secrets.
-2. Check whether the US market should run today.
-3. Fetch recent price and history data for each ticker.
-4. Optionally enrich the context with news from Tavily, SerpAPI, Brave, or Bocha.
+2. Resolve the correct US trading session for post-close delivery in your configured timezone.
+3. Fetch recent price data plus roughly one year of history for each ticker.
+4. Enrich the context with fundamentals, 52-week range, relative strength vs `SPY`, and merged news from multiple providers.
 5. Send the assembled context to Gemini through LiteLLM.
 6. Parse the model output into structured stock analysis results.
 7. Generate a stock report and optional US market review.
@@ -52,7 +52,8 @@ The analysis is based on a combination of:
 - Historical and recent market data from the project data provider layer
 - Realtime quote augmentation when available
 - Technical context such as price trend and moving-average structure
-- Recent news and search results, if search API keys are configured
+- Fundamental context such as valuation, growth, leverage, and 52-week range
+- Recent news and search results merged across multiple providers, including Yahoo Finance RSS
 - Gemini prompt synthesis and structured output parsing
 
 This is an AI-assisted analysis tool, not an execution system and not financial advice.
@@ -78,12 +79,20 @@ Useful optional settings:
 - `MARKET_REVIEW_ENABLED`
 - `MERGE_EMAIL_NOTIFICATION`
 - `TRADING_DAY_CHECK_ENABLED`
+- `TIMEZONE`
+- `SCHEDULE_TIME`
+- `POST_MARKET_DELAY`
+- `HISTORICAL_LOOKBACK_DAYS`
 
 Important defaults:
 
 - `MARKET_REVIEW_REGION=us`
 - `MERGE_EMAIL_NOTIFICATION=true`
 - `SINGLE_STOCK_NOTIFY=false`
+- `TIMEZONE=Asia/Kuala_Lumpur`
+- `SCHEDULE_TIME=08:00`
+- `NEWS_MAX_AGE_DAYS=7`
+- `HISTORICAL_LOOKBACK_DAYS=252`
 
 ## Quick Start
 

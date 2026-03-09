@@ -37,6 +37,12 @@ US_INDEX_MAPPING = {
     # VIX 波动率指数
     'VIX': ('^VIX', 'VIX恐慌指数'),
     '^VIX': ('^VIX', 'VIX恐慌指数'),
+    # US 10Y Treasury yield
+    'TNX': ('^TNX', '美国10年期国债收益率'),
+    '^TNX': ('^TNX', '美国10年期国债收益率'),
+    # US Dollar Index
+    'DXY': ('DX-Y.NYB', '美元指数'),
+    'DX-Y.NYB': ('DX-Y.NYB', '美元指数'),
     # 罗素 2000
     'RUT': ('^RUT', '罗素2000指数'),
     '^RUT': ('^RUT', '罗素2000指数'),

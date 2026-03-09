@@ -29,7 +29,7 @@ from src.notification import NotificationService, NotificationChannel
 from src.search_service import SearchService
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
-from src.core.trading_calendar import get_market_for_stock, is_market_open
+from src.core.trading_calendar import get_market_for_stock, is_market_open, get_market_reference_date
 from bot.models import BotMessage
 
 
@@ -77,6 +77,8 @@ class StockAnalysisPipeline:
         self.trend_analyzer = StockTrendAnalyzer()  # 趋势分析器
         self.analyzer = GeminiAnalyzer()
         self.notifier = NotificationService(source_message=source_message)
+        self._history_cache: Dict[Tuple[str, int], pd.DataFrame] = {}
+        self._reference_date_cache: Dict[str, date] = {}
         
         # 初始化搜索服务
         self.search_service = SearchService(
@@ -102,6 +104,73 @@ class StockAnalysisPipeline:
             logger.info("搜索服务已启用 (Tavily/SerpAPI)")
         else:
             logger.warning("搜索服务未启用（未配置 API Key）")
+
+    def _get_reference_date(self, stock_code: str) -> date:
+        """Resolve the market date that should be analyzed for the current runtime."""
+        if stock_code in self._reference_date_cache:
+            return self._reference_date_cache[stock_code]
+
+        market = get_market_for_stock(stock_code) or "US"
+        ref_date = get_market_reference_date(market, run_timezone=self.config.timezone)
+        self._reference_date_cache[stock_code] = ref_date
+        return ref_date
+
+    def _get_history_frame(self, stock_code: str, days: Optional[int] = None) -> pd.DataFrame:
+        """Fetch and cache historical frames used for enrichment and comparisons."""
+        lookback_days = days or self.config.historical_lookback_days
+        cache_key = (stock_code, lookback_days)
+        if cache_key not in self._history_cache:
+            df, _ = self.fetcher_manager.get_daily_data(stock_code, days=lookback_days)
+            self._history_cache[cache_key] = df.copy() if df is not None else pd.DataFrame()
+        return self._history_cache[cache_key].copy()
+
+    def _build_fundamental_context(self, stock_code: str, realtime_quote: Any) -> Dict[str, Any]:
+        """Build long-term context fields from fundamentals and relative performance."""
+        fundamentals = self.fetcher_manager.get_fundamentals(stock_code) or {}
+        history = self._get_history_frame(stock_code)
+
+        relative_strength = None
+        try:
+            benchmark_history = self._get_history_frame("SPY")
+            if not history.empty and not benchmark_history.empty:
+                stock_return = (float(history.iloc[-1]["close"]) / float(history.iloc[0]["close"]) - 1) * 100
+                benchmark_return = (
+                    float(benchmark_history.iloc[-1]["close"]) / float(benchmark_history.iloc[0]["close"]) - 1
+                ) * 100
+                relative_strength = round(stock_return - benchmark_return, 2)
+        except Exception as exc:
+            logger.debug("%s relative strength calculation failed: %s", stock_code, exc)
+
+        quote_high = getattr(realtime_quote, "high_52w", None)
+        quote_low = getattr(realtime_quote, "low_52w", None)
+        history_high = float(history["close"].max()) if not history.empty and "close" in history.columns else None
+        history_low = float(history["close"].min()) if not history.empty and "close" in history.columns else None
+
+        context = {
+            "pe_ratio": fundamentals.get("pe_ratio") or getattr(realtime_quote, "pe_ratio", None),
+            "forward_pe": fundamentals.get("forward_pe"),
+            "peg_ratio": fundamentals.get("peg_ratio"),
+            "pb_ratio": fundamentals.get("pb_ratio") or getattr(realtime_quote, "pb_ratio", None),
+            "eps_growth": fundamentals.get("eps_growth"),
+            "revenue_growth": fundamentals.get("revenue_growth"),
+            "revenue_trend": fundamentals.get("revenue_trend"),
+            "debt_to_equity": fundamentals.get("debt_to_equity"),
+            "free_cash_flow": fundamentals.get("free_cash_flow"),
+            "operating_cash_flow": fundamentals.get("operating_cash_flow"),
+            "gross_margin": fundamentals.get("gross_margin"),
+            "profit_margin": fundamentals.get("profit_margin"),
+            "market_cap": fundamentals.get("market_cap") or getattr(realtime_quote, "total_mv", None),
+            "enterprise_value": fundamentals.get("enterprise_value"),
+            "high_52w": quote_high or fundamentals.get("high_52w") or history_high,
+            "low_52w": quote_low or fundamentals.get("low_52w") or history_low,
+            "relative_strength_vs_spy": relative_strength,
+            "sector": fundamentals.get("sector"),
+            "industry": fundamentals.get("industry"),
+            "earnings_date": fundamentals.get("earnings_date"),
+            "next_earnings_date": fundamentals.get("next_earnings_date"),
+            "business_summary": fundamentals.get("long_business_summary"),
+        }
+        return {k: v for k, v in context.items() if v not in (None, "", [])}
     
     def fetch_and_save_stock_data(
         self, 
@@ -127,7 +196,7 @@ class StockAnalysisPipeline:
             # 首先获取股票名称
             stock_name = self.fetcher_manager.get_stock_name(code)
 
-            today = date.today()
+            today = self._get_reference_date(code)
             # 注意：这里用自然日 date.today() 做“断点续传”判断。
             # 若在周末/节假日/非交易日运行，或机器时区不在中国，可能出现：
             # - 数据库已有最新交易日数据但仍会重复拉取（has_today_data 返回 False）
@@ -141,7 +210,10 @@ class StockAnalysisPipeline:
 
             # 从数据源获取数据
             logger.info(f"{stock_name}({code}) 开始从数据源获取数据...")
-            df, source_name = self.fetcher_manager.get_daily_data(code, days=30)
+            df, source_name = self.fetcher_manager.get_daily_data(
+                code,
+                days=max(self.config.historical_lookback_days, 252),
+            )
 
             if df is None or df.empty:
                 return False, "获取数据为空"
@@ -232,14 +304,14 @@ class StockAnalysisPipeline:
             # Step 3: 趋势分析（基于交易理念）
             trend_result: Optional[TrendAnalysisResult] = None
             try:
-                end_date = date.today()
-                start_date = end_date - timedelta(days=89)  # ~60 trading days for MA60
+                end_date = self._get_reference_date(code)
+                start_date = end_date - timedelta(days=max(self.config.historical_lookback_days * 2, 400))
                 historical_bars = self.db.get_data_range(code, start_date, end_date)
                 if historical_bars:
                     df = pd.DataFrame([bar.to_dict() for bar in historical_bars])
                     # Issue #234: Augment with realtime for intraday MA calculation
                     if self.config.enable_realtime_quote and realtime_quote:
-                        df = self._augment_historical_with_realtime(df, realtime_quote, code)
+                        df = self._augment_historical_with_realtime(df, realtime_quote, code, end_date)
                     trend_result = self.trend_analyzer.analyze(df, code)
                     logger.info(f"{stock_name}({code}) 趋势分析: {trend_result.trend_status.value}, "
                               f"买入信号={trend_result.buy_signal.value}, 评分={trend_result.signal_score}")
@@ -286,14 +358,14 @@ class StockAnalysisPipeline:
                 logger.info(f"{stock_name}({code}) 搜索服务不可用，跳过情报搜索")
 
             # Step 5: 获取分析上下文（技术面数据）
-            context = self.db.get_analysis_context(code)
+            context = self.db.get_analysis_context(code, target_date=self._get_reference_date(code))
 
             if context is None:
                 logger.warning(f"{stock_name}({code}) 无法获取历史行情数据，将仅基于新闻和实时行情分析")
                 context = {
                     'code': code,
                     'stock_name': stock_name,
-                    'date': date.today().isoformat(),
+                    'date': self._get_reference_date(code).isoformat(),
                     'data_missing': True,
                     'today': {},
                     'yesterday': {}
@@ -305,7 +377,8 @@ class StockAnalysisPipeline:
                 realtime_quote, 
                 chip_data, 
                 trend_result,
-                stock_name  # 传入股票名称
+                stock_name,
+                code,
             )
             
             # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
@@ -350,7 +423,8 @@ class StockAnalysisPipeline:
         realtime_quote,
         chip_data: Optional[ChipDistribution],
         trend_result: Optional[TrendAnalysisResult],
-        stock_name: str = ""
+        stock_name: str = "",
+        stock_code: str = "",
     ) -> Dict[str, Any]:
         """
         增强分析上下文
@@ -391,6 +465,8 @@ class StockAnalysisPipeline:
                 'total_mv': getattr(realtime_quote, 'total_mv', None),
                 'circ_mv': getattr(realtime_quote, 'circ_mv', None),
                 'change_60d': getattr(realtime_quote, 'change_60d', None),
+                'high_52w': getattr(realtime_quote, 'high_52w', None),
+                'low_52w': getattr(realtime_quote, 'low_52w', None),
                 'source': getattr(realtime_quote, 'source', None),
             }
             # 移除 None 值以减少上下文大小
@@ -422,6 +498,10 @@ class StockAnalysisPipeline:
                 'signal_reasons': trend_result.signal_reasons,
                 'risk_factors': trend_result.risk_factors,
             }
+
+        fundamentals = self._build_fundamental_context(stock_code or context.get('code', ''), realtime_quote)
+        if fundamentals:
+            enhanced['fundamentals'] = fundamentals
 
         # Issue #234: Override today with realtime OHLC + trend MA for intraday analysis
         # Guard: trend_result.ma5 > 0 ensures MA calculation succeeded (data sufficient)
@@ -462,7 +542,7 @@ class StockAnalysisPipeline:
                 enhanced['ma_status'] = self._compute_ma_status(
                     price, trend_result.ma5, trend_result.ma10, trend_result.ma20
                 )
-                enhanced['date'] = date.today().isoformat()
+                enhanced['date'] = self._get_reference_date(stock_code or context.get('code', '')).isoformat()
                 if yesterday_close is not None:
                     try:
                         yc = float(yesterday_close)
@@ -690,7 +770,7 @@ class StockAnalysisPipeline:
             return "震荡整理 ↔️"
 
     def _augment_historical_with_realtime(
-        self, df: pd.DataFrame, realtime_quote: Any, code: str
+        self, df: pd.DataFrame, realtime_quote: Any, code: str, reference_date: Optional[date] = None
     ) -> pd.DataFrame:
         """
         Augment historical OHLCV with today's realtime quote for intraday MA calculation.
@@ -710,8 +790,9 @@ class StockAnalysisPipeline:
         )
         if not enable_realtime_tech:
             return df
+        trading_date = reference_date or self._get_reference_date(code)
         market = get_market_for_stock(code)
-        if market and not is_market_open(market, date.today()):
+        if market and not is_market_open(market, trading_date):
             return df
 
         last_val = df['date'].max()
@@ -729,7 +810,7 @@ class StockAnalysisPipeline:
         amt = getattr(realtime_quote, 'amount', None)
         pct = getattr(realtime_quote, 'change_pct', None)
 
-        if last_date >= date.today():
+        if last_date >= trading_date:
             # Update last row with realtime close (copy to avoid mutating caller's df)
             df = df.copy()
             idx = df.index[-1]
@@ -750,7 +831,7 @@ class StockAnalysisPipeline:
             # Append virtual today row
             new_row = {
                 'code': code,
-                'date': date.today(),
+                'date': trading_date,
                 'open': open_p,
                 'high': high_p,
                 'low': low_p,
@@ -912,7 +993,8 @@ class StockAnalysisPipeline:
                             report_content = self.notifier.generate_single_stock_report(result)
                             logger.info(f"[{code}] 使用精简报告格式")
                         
-                        if self.notifier.send(report_content, email_stock_codes=[code]):
+                        subject = self.notifier.generate_email_subject([result])
+                        if self.notifier.send(report_content, email_stock_codes=[code], email_subject=subject):
                             logger.info(f"[{code}] 单股推送成功")
                         else:
                             logger.warning(f"[{code}] 单股推送失败")
@@ -1027,7 +1109,7 @@ class StockAnalysisPipeline:
         # dry-run 模式下，数据获取成功即视为成功
         if dry_run:
             # 检查哪些股票的数据今天已存在
-            success_count = sum(1 for code in stock_codes if self.db.has_today_data(code))
+            success_count = sum(1 for code in stock_codes if self.db.has_today_data(code, self._get_reference_date(code)))
             fail_count = len(stock_codes) - success_count
         else:
             success_count = len(results)
@@ -1077,7 +1159,8 @@ class StockAnalysisPipeline:
             
             # Push once via email-only notifier.
             if self.notifier.is_available():
-                if self.notifier.send(report):
+                subject = self.notifier.generate_email_subject(results)
+                if self.notifier.send(report, email_subject=subject):
                     logger.info("决策仪表盘推送成功")
                 else:
                     logger.warning("决策仪表盘推送失败")

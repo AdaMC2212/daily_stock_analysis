@@ -15,12 +15,20 @@ import logging
 import random
 import time
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
+from email.utils import parsedate_to_datetime
+from urllib.parse import quote_plus
 from typing import List, Dict, Any, Optional, Tuple
 from itertools import cycle
+import xml.etree.ElementTree as ET
 import requests
-from newspaper import Article, Config
+try:
+    from newspaper import Article, Config
+except ImportError:  # pragma: no cover - optional dependency
+    Article = None
+    Config = None
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -58,6 +66,8 @@ def fetch_url_content(url: str, timeout: int = 5) -> str:
     获取 URL 网页正文内容 (使用 newspaper3k)
     """
     try:
+        if Article is None or Config is None:
+            return ""
         # 配置 newspaper3k
         config = Config()
         config.browser_user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -231,6 +241,77 @@ class BaseSearchProvider(ABC):
                 error_message=str(e),
                 search_time=elapsed
             )
+
+
+class YahooFinanceRSSProvider(BaseSearchProvider):
+    """Free Yahoo Finance RSS provider for ticker-specific news coverage."""
+
+    def __init__(self):
+        super().__init__(["rss"], "YahooFinanceRSS")
+
+    @property
+    def is_available(self) -> bool:
+        return True
+
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
+        del api_key
+        ticker = self._extract_ticker(query)
+        if not ticker:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message="No ticker detected for Yahoo Finance RSS",
+            )
+
+        url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={quote_plus(ticker)}&region=US&lang=en-US"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        root = ET.fromstring(response.text)
+        cutoff = datetime.now().timestamp() - max(days, 1) * 86400
+
+        results: List[SearchResult] = []
+        for item in root.findall(".//item"):
+            published = item.findtext("pubDate")
+            published_text = None
+            if published:
+                try:
+                    published_dt = parsedate_to_datetime(published)
+                    if published_dt.timestamp() < cutoff:
+                        continue
+                    published_text = published_dt.strftime("%Y-%m-%d")
+                except Exception:
+                    published_text = published
+
+            results.append(
+                SearchResult(
+                    title=(item.findtext("title") or "").strip(),
+                    snippet=(item.findtext("description") or "").strip(),
+                    url=(item.findtext("link") or "").strip(),
+                    source="finance.yahoo.com",
+                    published_date=published_text,
+                )
+            )
+            if len(results) >= max_results:
+                break
+
+        return SearchResponse(
+            query=query,
+            results=results,
+            provider=self.name,
+            success=bool(results),
+            error_message=None if results else "Yahoo Finance RSS returned no recent results",
+        )
+
+    @staticmethod
+    def _extract_ticker(query: str) -> str:
+        for token in (query or "").replace(",", " ").split():
+            candidate = token.strip().upper()
+            compact = candidate.replace(".", "")
+            if 1 <= len(compact) <= 5 and compact.isalnum() and candidate[0].isalpha():
+                return candidate
+        return ""
 
 
 class TavilySearchProvider(BaseSearchProvider):
@@ -935,7 +1016,7 @@ class SearchService:
         tavily_keys: Optional[List[str]] = None,
         brave_keys: Optional[List[str]] = None,
         serpapi_keys: Optional[List[str]] = None,
-        news_max_age_days: int = 3,
+        news_max_age_days: int = 7,
     ):
         """
         初始化搜索服务
@@ -970,6 +1051,8 @@ class SearchService:
         if serpapi_keys:
             self._providers.append(SerpAPISearchProvider(serpapi_keys))
             logger.info(f"已配置 SerpAPI 搜索，共 {len(serpapi_keys)} 个 API Key")
+
+        self._providers.append(YahooFinanceRSSProvider())
         
         if not self._providers:
             logger.warning("未配置任何搜索引擎 API Key，新闻搜索功能将不可用")
@@ -1058,6 +1141,89 @@ class SearchService:
                 for k in oldest:
                     del self._cache[k]
         self._cache[key] = (time.time(), response)
+
+    @staticmethod
+    def _normalize_url(url: str) -> str:
+        return (url or "").strip().rstrip("/")
+
+    def _merge_search_responses(
+        self,
+        query: str,
+        responses: List[SearchResponse],
+        max_results: int,
+        enrich_full_text: bool = False,
+    ) -> SearchResponse:
+        """Merge provider responses, dedupe URLs, and optionally enrich article text."""
+        merged_results: List[SearchResult] = []
+        seen_urls = set()
+        provider_names: List[str] = []
+
+        for response in responses:
+            if not response or not response.success:
+                continue
+            if response.provider not in provider_names:
+                provider_names.append(response.provider)
+            for result in response.results:
+                normalized_url = self._normalize_url(result.url)
+                dedupe_key = normalized_url or f"{result.title}|{result.source}"
+                if dedupe_key in seen_urls:
+                    continue
+                seen_urls.add(dedupe_key)
+                merged_results.append(result)
+
+        if enrich_full_text and merged_results:
+            for result in merged_results[:max_results]:
+                full_text = fetch_url_content(result.url, timeout=6)
+                if full_text:
+                    result.snippet = (result.snippet + "\n\nFull article excerpt:\n" + full_text[:1200]).strip()
+
+        return SearchResponse(
+            query=query,
+            results=merged_results[:max_results],
+            provider=", ".join(provider_names) if provider_names else "None",
+            success=bool(merged_results),
+            error_message=None if merged_results else "All search providers returned no results",
+        )
+
+    def _search_with_available_providers(
+        self,
+        query: str,
+        max_results: int,
+        days: int,
+        provider_limit: int = 3,
+        enrich_full_text: bool = False,
+    ) -> SearchResponse:
+        """Run the same query across multiple providers in parallel and merge the results."""
+        available_providers = [provider for provider in self._providers if provider.is_available][:provider_limit]
+        if not available_providers:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider="None",
+                success=False,
+                error_message="No search providers are available",
+            )
+
+        responses: List[SearchResponse] = []
+        with ThreadPoolExecutor(max_workers=min(len(available_providers), provider_limit)) as executor:
+            future_map = {
+                executor.submit(provider.search, query, max_results, days): provider.name
+                for provider in available_providers
+            }
+            for future in as_completed(future_map):
+                provider_name = future_map[future]
+                try:
+                    response = future.result()
+                    responses.append(response)
+                except Exception as exc:
+                    logger.warning("%s search failed for query '%s': %s", provider_name, query, exc)
+
+        return self._merge_search_responses(
+            query=query,
+            responses=responses,
+            max_results=max_results,
+            enrich_full_text=enrich_full_text,
+        )
     
     def search_stock_news(
         self,
@@ -1084,14 +1250,7 @@ class SearchService:
         # 2. 周六、周日：搜索近2-3天（覆盖周末）
         # 3. 周一：搜索近3天（覆盖周末）
         # 4. 用 NEWS_MAX_AGE_DAYS 限制上限
-        today_weekday = datetime.now().weekday()
-        if today_weekday == 0:  # 周一
-            weekday_days = 3
-        elif today_weekday >= 5:  # 周六(5)、周日(6)
-            weekday_days = 2
-        else:  # 周二(1) - 周五(4)
-            weekday_days = 1
-        search_days = min(weekday_days, self.news_max_age_days)
+        search_days = self.news_max_age_days
 
         # 构建搜索查询（优化搜索效果）
         is_foreign = self._is_foreign_stock(stock_code)
@@ -1114,28 +1273,19 @@ class SearchService:
             logger.info(f"使用缓存搜索结果: {stock_name}({stock_code})")
             return cached
 
-        # 依次尝试各个搜索引擎
-        for provider in self._providers:
-            if not provider.is_available:
-                continue
-            
-            response = provider.search(query, max_results, days=search_days)
-            
-            if response.success and response.results:
-                logger.info(f"使用 {provider.name} 搜索成功")
-                self._put_cache(cache_key, response)
-                return response
-            else:
-                logger.warning(f"{provider.name} 搜索失败: {response.error_message}，尝试下一个引擎")
-        
-        # 所有引擎都失败
-        return SearchResponse(
+        response = self._search_with_available_providers(
             query=query,
-            results=[],
-            provider="None",
-            success=False,
-            error_message="所有搜索引擎都不可用或搜索失败"
+            max_results=max_results,
+            days=search_days,
+            provider_limit=3,
+            enrich_full_text=True,
         )
+        if response.success:
+            logger.info("使用多引擎聚合搜索成功: %s", response.provider)
+            self._put_cache(cache_key, response)
+            return response
+
+        return response
     
     def search_stock_events(
         self,
@@ -1251,24 +1401,19 @@ class SearchService:
         
         logger.info(f"开始多维度情报搜索: {stock_name}({stock_code})")
         
-        # 轮流使用不同的搜索引擎
-        provider_index = 0
-        
         for dim in search_dimensions:
             if search_count >= max_searches:
                 break
-            
-            # 选择搜索引擎（轮流使用）
-            available_providers = [p for p in self._providers if p.is_available]
-            if not available_providers:
-                break
-            
-            provider = available_providers[provider_index % len(available_providers)]
-            provider_index += 1
-            
-            logger.info(f"[情报搜索] {dim['desc']}: 使用 {provider.name}")
-            
-            response = provider.search(dim['query'], max_results=3, days=self.news_max_age_days)
+
+            logger.info(f"[情报搜索] {dim['desc']}: 使用多引擎聚合")
+
+            response = self._search_with_available_providers(
+                query=dim['query'],
+                max_results=4,
+                days=self.news_max_age_days,
+                provider_limit=3,
+                enrich_full_text=True,
+            )
             results[dim['name']] = response
             search_count += 1
             
@@ -1318,8 +1463,7 @@ class SearchService:
                 for i, r in enumerate(resp.results[:4], 1):
                     date_str = f" [{r.published_date}]" if r.published_date else ""
                     lines.append(f"  {i}. {r.title}{date_str}")
-                    # 如果摘要太短，可能信息量不足
-                    snippet = r.snippet[:150] if len(r.snippet) > 20 else r.snippet
+                    snippet = r.snippet[:260] if len(r.snippet) > 20 else r.snippet
                     lines.append(f"     {snippet}...")
             else:
                 lines.append("  未找到相关信息")

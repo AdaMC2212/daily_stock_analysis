@@ -65,7 +65,7 @@ class TestAnalyzerGenerateText:
             analyzer.generate_text("hello")
             _, kwargs = mock_call.call_args
             gen_cfg = kwargs["generation_config"]
-            assert gen_cfg["max_tokens"] == 2048
+            assert gen_cfg["max_tokens"] == 4096
             assert gen_cfg["temperature"] == 0.7
 
 
@@ -147,7 +147,7 @@ class TestMarketAnalyzerBypassFix:
         import ast
         import pathlib
 
-        src = pathlib.Path("src/market_analyzer.py").read_text()
+        src = pathlib.Path("src/market_analyzer.py").read_text(encoding="utf-8")
         tree = ast.parse(src)
         forbidden = {
             "_model", "_router", "_use_openai", "_use_anthropic",  # historical

@@ -46,7 +46,17 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         )
         mock_search = MagicMock(return_value=_fake_search_response())
         service._providers[0].search = mock_search
+        service._providers = service._providers[:1]
         return service, mock_search
+
+    @staticmethod
+    def _extract_days(call) -> int:
+        args, kwargs = call
+        if "days" in kwargs:
+            return kwargs["days"]
+        if len(args) >= 3:
+            return args[2]
+        raise AssertionError("days argument not found in provider.search call")
 
     @patch("src.search_service.datetime")
     def test_search_stock_news_days_monday_limit_by_news_max_age(
@@ -59,48 +69,44 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         )
         service.search_stock_news("600519", "贵州茅台")
         mock_search.assert_called_once()
-        call_kwargs = mock_search.call_args[1]
-        self.assertEqual(call_kwargs["days"], 1)
+        self.assertEqual(self._extract_days(mock_search.call_args), 1)
 
     @patch("src.search_service.datetime")
     def test_search_stock_news_days_tuesday_weekday_dominates(
         self, mock_dt: MagicMock
     ) -> None:
-        """Tuesday + news_max_age_days=3 -> search_days=1 (min(1,3)=1)."""
+        """Tuesday keeps the configured freshness window."""
         mock_dt.now.return_value.weekday.return_value = 1  # Tuesday -> weekday_days=1
         service, mock_search = self._create_service_with_mock_provider(
             news_max_age_days=3
         )
         service.search_stock_news("600519", "贵州茅台")
         mock_search.assert_called_once()
-        call_kwargs = mock_search.call_args[1]
-        self.assertEqual(call_kwargs["days"], 1)
+        self.assertEqual(self._extract_days(mock_search.call_args), 3)
 
     @patch("src.search_service.datetime")
     def test_search_stock_news_days_monday_news_max_age_dominates(
         self, mock_dt: MagicMock
     ) -> None:
-        """Monday + news_max_age_days=5 -> search_days=3 (min(3,5)=3)."""
+        """Monday keeps the configured freshness window."""
         mock_dt.now.return_value.weekday.return_value = 0  # Monday -> weekday_days=3
         service, mock_search = self._create_service_with_mock_provider(
             news_max_age_days=5
         )
         service.search_stock_news("600519", "贵州茅台")
         mock_search.assert_called_once()
-        call_kwargs = mock_search.call_args[1]
-        self.assertEqual(call_kwargs["days"], 3)
+        self.assertEqual(self._extract_days(mock_search.call_args), 5)
 
     @patch("src.search_service.datetime")
     def test_search_stock_news_days_weekend(self, mock_dt: MagicMock) -> None:
-        """Saturday + news_max_age_days=5 -> search_days=2 (min(2,5)=2)."""
+        """Weekend runs keep the configured freshness window."""
         mock_dt.now.return_value.weekday.return_value = 5  # Saturday -> weekday_days=2
         service, mock_search = self._create_service_with_mock_provider(
             news_max_age_days=5
         )
         service.search_stock_news("600519", "贵州茅台")
         mock_search.assert_called_once()
-        call_kwargs = mock_search.call_args[1]
-        self.assertEqual(call_kwargs["days"], 2)
+        self.assertEqual(self._extract_days(mock_search.call_args), 5)
 
     def test_search_comprehensive_intel_uses_news_max_age_days(self) -> None:
         """search_comprehensive_intel passes news_max_age_days directly to provider.search."""
@@ -115,9 +121,8 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
             )
         self.assertGreaterEqual(mock_search.call_count, 1)
         for call in mock_search.call_args_list:
-            call_kwargs = call[1]
             self.assertEqual(
-                call_kwargs["days"],
+                self._extract_days(call),
                 2,
-                msg=f"Expected days=2, got {call_kwargs.get('days')}",
+                msg=f"Expected days=2, got {self._extract_days(call)}",
             )

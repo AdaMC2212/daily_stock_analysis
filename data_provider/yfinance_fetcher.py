@@ -16,6 +16,7 @@ YfinanceFetcher - 兜底数据源 (Priority 4)
 
 import logging
 import re
+from functools import lru_cache
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
@@ -34,6 +35,19 @@ from .us_index_mapping import get_us_index_yf_symbol, is_us_index_code, is_us_st
 import os
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_number(value: Any) -> Optional[float]:
+    """Convert provider values to float when possible."""
+    try:
+        if value is None or value == "":
+            return None
+        number = float(value)
+        if pd.isna(number):
+            return None
+        return number
+    except Exception:
+        return None
 
 
 class YfinanceFetcher(BaseFetcher):
@@ -60,6 +74,18 @@ class YfinanceFetcher(BaseFetcher):
     def __init__(self):
         """初始化 YfinanceFetcher"""
         pass
+
+    @staticmethod
+    @lru_cache(maxsize=256)
+    def _get_ticker_info(yf_symbol: str) -> Dict[str, Any]:
+        """Cache ticker metadata to avoid repeated Yahoo requests in one run."""
+        import yfinance as yf
+
+        try:
+            info = yf.Ticker(yf_symbol).info or {}
+            return info if isinstance(info, dict) else dict(info)
+        except Exception:
+            return {}
     
     def _convert_stock_code(self, stock_code: str) -> str:
         """
@@ -447,6 +473,58 @@ class YfinanceFetcher(BaseFetcher):
             logger.warning(f"[Yfinance] 获取美股指数 {user_code} 实时行情失败: {e}")
             return None
 
+    def get_fundamentals(self, stock_code: str) -> Optional[Dict[str, Any]]:
+        """Fetch lightweight fundamental context from Yahoo Finance."""
+        yf_symbol = self._convert_stock_code(stock_code)
+        if is_us_index_code(stock_code):
+            return {}
+
+        info = self._get_ticker_info(yf_symbol)
+        if not info:
+            return {}
+
+        def pick(*keys: str) -> Optional[float]:
+            for key in keys:
+                value = _safe_number(info.get(key))
+                if value is not None:
+                    return value
+            return None
+
+        revenue_growth = pick("revenueGrowth")
+        earnings_growth = pick("earningsGrowth")
+        total_revenue = pick("totalRevenue")
+        debt_to_equity = pick("debtToEquity")
+        gross_margin = pick("grossMargins")
+        profit_margin = pick("profitMargins")
+
+        return {
+            "pe_ratio": pick("trailingPE", "forwardPE"),
+            "forward_pe": pick("forwardPE"),
+            "peg_ratio": pick("pegRatio"),
+            "pb_ratio": pick("priceToBook"),
+            "eps_growth": round(earnings_growth * 100, 2) if earnings_growth is not None else None,
+            "revenue_growth": round(revenue_growth * 100, 2) if revenue_growth is not None else None,
+            "revenue_trend": "improving" if revenue_growth and revenue_growth > 0 else (
+                "contracting" if revenue_growth is not None else None
+            ),
+            "debt_to_equity": debt_to_equity,
+            "free_cash_flow": pick("freeCashflow"),
+            "operating_cash_flow": pick("operatingCashflow"),
+            "gross_margin": round(gross_margin * 100, 2) if gross_margin is not None else None,
+            "profit_margin": round(profit_margin * 100, 2) if profit_margin is not None else None,
+            "market_cap": pick("marketCap"),
+            "enterprise_value": pick("enterpriseValue"),
+            "high_52w": pick("fiftyTwoWeekHigh"),
+            "low_52w": pick("fiftyTwoWeekLow"),
+            "target_price": pick("targetMeanPrice"),
+            "earnings_date": info.get("earningsDate"),
+            "next_earnings_date": info.get("nextFiscalYearEnd") or info.get("earningsTimestamp"),
+            "sector": info.get("sector"),
+            "industry": info.get("industry"),
+            "long_business_summary": (info.get("longBusinessSummary") or "")[:600],
+            "total_revenue": total_revenue,
+        }
+
     def get_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """
         获取美股/美股指数实时行情数据
@@ -481,20 +559,21 @@ class YfinanceFetcher(BaseFetcher):
             logger.debug(f"[Yfinance] 获取美股 {symbol} 实时行情")
             
             ticker = yf.Ticker(symbol)
+            ticker_info = self._get_ticker_info(symbol)
             
             # 尝试获取 fast_info（更快，但字段较少）
             try:
-                info = ticker.fast_info
-                if info is None:
+                fast_info = ticker.fast_info
+                if fast_info is None:
                     raise ValueError("fast_info is None")
                 
-                price = getattr(info, 'lastPrice', None) or getattr(info, 'last_price', None)
-                prev_close = getattr(info, 'previousClose', None) or getattr(info, 'previous_close', None)
-                open_price = getattr(info, 'open', None)
-                high = getattr(info, 'dayHigh', None) or getattr(info, 'day_high', None)
-                low = getattr(info, 'dayLow', None) or getattr(info, 'day_low', None)
-                volume = getattr(info, 'lastVolume', None) or getattr(info, 'last_volume', None)
-                market_cap = getattr(info, 'marketCap', None) or getattr(info, 'market_cap', None)
+                price = getattr(fast_info, 'lastPrice', None) or getattr(fast_info, 'last_price', None)
+                prev_close = getattr(fast_info, 'previousClose', None) or getattr(fast_info, 'previous_close', None)
+                open_price = getattr(fast_info, 'open', None)
+                high = getattr(fast_info, 'dayHigh', None) or getattr(fast_info, 'day_high', None)
+                low = getattr(fast_info, 'dayLow', None) or getattr(fast_info, 'day_low', None)
+                volume = getattr(fast_info, 'lastVolume', None) or getattr(fast_info, 'last_volume', None)
+                market_cap = getattr(fast_info, 'marketCap', None) or getattr(fast_info, 'market_cap', None)
                 
             except Exception:
                 # 回退到 history 方法获取最新数据
@@ -529,9 +608,17 @@ class YfinanceFetcher(BaseFetcher):
             
             # 获取股票名称
             try:
-                name = ticker.info.get('shortName', '') or ticker.info.get('longName', '') or symbol
+                name = (
+                    ticker_info.get('shortName', '')
+                    or ticker_info.get('longName', '')
+                    or ticker.info.get('shortName', '')
+                    or ticker.info.get('longName', '')
+                    or symbol
+                )
             except Exception:
                 name = symbol
+
+            fundamentals = self.get_fundamentals(symbol)
             
             quote = UnifiedRealtimeQuote(
                 code=symbol,
@@ -549,10 +636,12 @@ class YfinanceFetcher(BaseFetcher):
                 high=high,
                 low=low,
                 pre_close=prev_close,
-                pe_ratio=None,
-                pb_ratio=None,
-                total_mv=market_cap,
+                pe_ratio=_safe_number(fundamentals.get("pe_ratio")),
+                pb_ratio=_safe_number(fundamentals.get("pb_ratio")),
+                total_mv=_safe_number(fundamentals.get("market_cap")) or market_cap,
                 circ_mv=None,
+                high_52w=_safe_number(fundamentals.get("high_52w")),
+                low_52w=_safe_number(fundamentals.get("low_52w")),
             )
             
             logger.info(f"[Yfinance] 获取美股 {symbol} 实时行情成功: 价格={price}")
