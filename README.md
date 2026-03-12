@@ -1,80 +1,122 @@
 # US Stock Analyzer
 
-US stock analysis pipeline powered by Gemini, with daily report delivery by Telegram.
+US stock analysis pipeline powered by Gemini, with Telegram delivery.
 
-This fork is intentionally streamlined. The supported path is:
+This fork is intentionally streamlined and focused on US stocks. It supports:
 
-- US stocks and US market review only
+- US stocks + US market review only
 - Gemini as the LLM provider
 - Telegram as the notification channel
 - Local runs or scheduled GitHub Actions runs
+- Optional signal filtering, portfolio-aware market review, bot listener, and earnings evaluator
 
-It is designed for a simple workflow: define a US watchlist, fetch market data, enrich with recent news, generate AI analysis, and send a report by Telegram.
+---
 
 ## What It Does
 
-- Analyzes a configurable list of US tickers such as `AAPL`, `MSFT`, `NVDA`, `SPY`, and `QQQ`
-- Generates a US market review for major US indices
-- Uses Gemini to turn technical, fundamental, macro, and news context into a readable long-term investing report
-- Sends the final report by Telegram
-- Skips non-trading days by default using US market calendar checks
-- Supports local execution and GitHub Actions scheduling
+- Analyzes a configurable watchlist of US tickers (e.g., `AAPL`, `MSFT`, `NVDA`, `SPY`, `QQQ`)
+- Generates a US market review
+- Produces two Telegram message types:
+  - **Buy Alerts** for confluence signals above a threshold
+  - **Daily Digest** summary for all watchlist stocks
+- Tracks monthly cash deployment and suggests per-buy allocation
+- Adds a portfolio impact section to the market review (optional)
+- Supports a Telegram chatbot for on-demand analysis (optional)
+- Evaluates recent earnings using FMP + Gemini (optional)
+
+---
 
 ## How It Works
 
-The main entrypoint is [main.py](main.py).
+Main entrypoint: `main.py`
 
-Runtime flow:
+Runtime flow (daily run):
 
 1. Load config from `.env` or GitHub Actions secrets.
-2. Resolve the correct US trading session for post-close delivery in your configured timezone.
-3. Fetch recent price data plus roughly one year of history for each ticker.
-4. Enrich the context with fundamentals, 52-week range, relative strength vs `SPY`, and merged news from multiple providers.
-5. Send the assembled context to Gemini through LiteLLM.
-6. Parse the model output into structured stock analysis results.
-7. Generate a stock report and optional US market review.
-8. Send the final report by Telegram.
+2. Resolve the correct US trading session for your configured timezone.
+3. Fetch recent price data + ~1 year of history for each ticker.
+4. Enrich with fundamentals, 52-week range, relative strength vs `SPY`, and recent news.
+5. Send context to Gemini via LiteLLM.
+6. Parse output into structured analysis results.
+7. Apply signal filtering:
+   - Buy alerts for high-confluence signals
+   - Daily digest summary for all stocks
+8. Optional US market review (with portfolio impact section if enabled).
+9. Optional earnings evaluator for recent reports.
+10. Send Telegram messages.
 
 Key modules:
 
-- [main.py](main.py): CLI entrypoint and orchestration
-- [src/core/pipeline.py](src/core/pipeline.py): stock analysis pipeline
-- [src/analyzer.py](src/analyzer.py): Gemini-based stock analysis
-- [src/core/market_review.py](src/core/market_review.py): US market review flow
-- [src/market_analyzer.py](src/market_analyzer.py): market review generation
-- [src/notification.py](src/notification.py): Telegram-only report delivery
-- [src/core/trading_calendar.py](src/core/trading_calendar.py): US trading-day checks
+- `main.py`: CLI entrypoint and orchestration
+- `src/core/pipeline.py`: stock analysis pipeline
+- `src/analyzer.py`: Gemini-based stock analysis
+- `src/core/market_review.py`: US market review flow
+- `src/market_analyzer.py`: market review prompt generation
+- `src/notification.py`: report building and Telegram delivery
+- `src/core/signal_filter.py`: buy alert vs digest filtering
+- `src/core/budget_tracker.py`: monthly cash allocation tracking
+- `src/bot/telegram_listener.py`: Telegram polling listener (optional)
+- `src/core/earnings_evaluator.py`: earnings summarization (optional)
+- `data_provider/fmp_provider.py`: FMP financial data (optional)
+
+---
 
 ## Analysis Basis
 
-The analysis is based on a combination of:
+The analysis combines:
 
-- Historical and recent market data from the project data provider layer
+- Historical and recent market data from the data provider layer
 - Realtime quote augmentation when available
-- Technical context such as price trend and moving-average structure
-- Fundamental context such as valuation, growth, leverage, and 52-week range
-- Recent news and search results merged across multiple providers, including Yahoo Finance RSS
+- Technical context (trend, moving averages, confluence signals)
+- Fundamental context (valuation, growth, leverage, 52-week range)
+- Recent news from multiple providers
 - Gemini prompt synthesis and structured output parsing
 
 This is an AI-assisted analysis tool, not an execution system and not financial advice.
 
-## Supported Configuration
+---
 
-The current supported configuration is the minimal setup in [.env.example](.env.example).
+## Configuration
 
-Required for normal use:
+The supported configuration lives in `.env.example`.
+
+**Required for normal use:**
 
 - `STOCK_LIST`
 - `GEMINI_API_KEY`
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 
-Useful optional settings:
+**Signal filtering:**
 
-- `TAVILY_API_KEYS`
-- `SERPAPI_API_KEYS`
-- `BRAVE_API_KEYS`
-- `BOCHA_API_KEYS`
+- `BUY_ALERT_MIN_SCORE=70`
+- `BUY_ALERT_ENABLED=true`
+- `DAILY_DIGEST_ENABLED=true`
+
+**Monthly cash allocation (optional):**
+
+- `MONTHLY_BUDGET=400`
+- `MONTHLY_DEPOSIT_DATE=1`
+
+**Portfolio-aware market review (optional):**
+
+- `PORTFOLIO_IMPACT_ENABLED=true`
+
+**Telegram bot listener (optional):**
+
+- `BOT_LISTENER_ENABLED=true`
+- `BOT_LISTENER_POLL_INTERVAL=5`
+- `CONCENTRATION_WARN_THRESHOLD=60`
+
+**Earnings evaluator (optional):**
+
+- `EARNINGS_EVAL_ENABLED=true`
+- `FMP_API_KEY=your_key_here`
+- `EARNINGS_LOOKBACK_DAYS=7`
+
+**Useful optional settings:**
+
+- `TAVILY_API_KEYS`, `SERPAPI_API_KEYS`, `BRAVE_API_KEYS`, `BOCHA_API_KEYS`
 - `MARKET_REVIEW_ENABLED`
 - `TRADING_DAY_CHECK_ENABLED`
 - `ANALYSIS_DELAY`
@@ -83,15 +125,7 @@ Useful optional settings:
 - `POST_MARKET_DELAY`
 - `HISTORICAL_LOOKBACK_DAYS`
 
-Important defaults:
-
-- `MARKET_REVIEW_REGION=us`
-- `SINGLE_STOCK_NOTIFY=false`
-- `TIMEZONE=Asia/Kuala_Lumpur`
-- `SCHEDULE_TIME=08:00`
-- `ANALYSIS_DELAY=0`
-- `NEWS_MAX_AGE_DAYS=7`
-- `HISTORICAL_LOOKBACK_DAYS=252`
+---
 
 ## Quick Start
 
@@ -129,43 +163,40 @@ python main.py --dry-run
 python main.py --force-run
 ```
 
-## GitHub Actions Setup
+---
 
-The scheduled workflow is [daily_analysis.yml](.github/workflows/daily_analysis.yml).
+## Telegram Output
 
-It currently runs:
+- **Buy Alert**: sent only when a stock meets the confluence threshold
+- **Daily Digest**: sent as a single summary message for all watchlist stocks
+- **Market Review**: optional, can include a Portfolio Impact section
+- **Earnings Report**: optional, sent for recent earnings events
 
-- Tuesday-Saturday at `00:00 UTC` (08:00 MYT)
-- Manually through `workflow_dispatch`
-- In one of three modes: `full`, `market-only`, or `stocks-only`
+---
 
-Set these repository secrets:
+## GitHub Actions
+
+Scheduled workflow: `.github/workflows/daily_analysis.yml`
+
+Set these secrets:
 
 - `GEMINI_API_KEY`
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 - `STOCK_LIST`
-- `TAVILY_API_KEYS` if you want news enrichment
+- `TAVILY_API_KEYS` (optional for news enrichment)
 
-Recommended `STOCK_LIST` example:
+---
 
-```text
-AAPL,MSFT,NVDA,SPY,QQQ
-```
+## Artifacts
 
-## Output
-
-The project generates local artifacts under:
+Local outputs:
 
 - `reports/`
 - `logs/`
 - `data/`
 
-Depending on your settings, Telegram can contain:
-
-- Stock analysis only
-- US market review only
-- Stock analysis + market review as separate pushes
+---
 
 ## Project Structure
 
@@ -176,25 +207,35 @@ Depending on your settings, Telegram can contain:
 |   |-- analyzer.py
 |   |-- market_analyzer.py
 |   |-- notification.py
+|   |-- bot/telegram_listener.py
 |   `-- core/
+|       |-- pipeline.py
+|       |-- signal_filter.py
+|       |-- budget_tracker.py
+|       `-- earnings_evaluator.py
 |-- data_provider/
+|   `-- fmp_provider.py
 |-- reports/
 |-- logs/
 `-- .github/workflows/
 ```
 
-## Current Scope
+---
 
-This README reflects the current supported runtime path of this fork.
+## Scope
+
+This README reflects the supported runtime path of this fork.
 
 Out of scope for this version:
 
 - China A-share analysis
 - Hong Kong stock analysis
-- Email delivery and other non-Telegram channels (WeChat, Feishu, Discord, PushPlus, Pushover, etc.)
+- Email or non-Telegram channels
 - Multi-market scheduling or region switching beyond `us`
 
-Some inherited files and historical docs may still reference upstream features that are no longer part of the supported flow. Use this README, [.env.example](.env.example), and [daily_analysis.yml](.github/workflows/daily_analysis.yml) as the source of truth for current usage.
+Some legacy files may reference upstream features not supported here. Use this README and `.env.example` as the source of truth.
+
+---
 
 ## Development
 
@@ -205,9 +246,11 @@ python -m py_compile main.py src/*.py data_provider/*.py
 flake8 main.py src/ --max-line-length=120
 ```
 
-Project changelog:
+Changelog:
 
-- [docs/CHANGELOG.md](docs/CHANGELOG.md)
+- `docs/CHANGELOG.md`
+
+---
 
 ## Disclaimer
 

@@ -14,6 +14,7 @@ A股自选股智能分析系统 - 核心分析流水线
 import logging
 import time
 import uuid
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from typing import List, Dict, Any, Optional, Tuple
@@ -29,6 +30,7 @@ from src.search_service import SearchService
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
 from src.core.trading_calendar import get_market_reference_date
+from src.core.sector_map import get_concentration_warning
 from bot.models import BotMessage
 
 
@@ -383,6 +385,8 @@ class StockAnalysisPipeline:
                 realtime_data = enhanced_context.get('realtime', {})
                 result.current_price = realtime_data.get('price')
                 result.change_pct = realtime_data.get('change_pct')
+                if trend_result:
+                    result.signal_reasons = list(trend_result.signal_reasons or [])
 
             # Step 7: 保存分析历史记录
             if result:
@@ -1178,3 +1182,39 @@ class StockAnalysisPipeline:
                 
         except Exception as e:
             logger.error(f"发送通知失败: {e}")
+
+
+def analyze_single_stock(
+    stock_code: str,
+    include_portfolio_context: bool = True,
+) -> Optional[AnalysisResult]:
+    """
+    Run a single-stock analysis with optional portfolio concentration warning.
+    """
+    config = get_config()
+    pipeline = StockAnalysisPipeline(config=config)
+    result = pipeline.process_single_stock(
+        stock_code,
+        skip_analysis=False,
+        single_stock_notify=False,
+        report_type=ReportType.SIMPLE,
+        analysis_query_id=uuid.uuid4().hex,
+        stock_tier=1,
+        position=None,
+    )
+
+    if not result or not include_portfolio_context:
+        return result
+
+    watchlist_raw = os.getenv("STOCK_LIST", "")
+    watchlist = [s.strip().upper() for s in watchlist_raw.split(",") if s.strip()]
+    threshold = int(os.getenv("CONCENTRATION_WARN_THRESHOLD", "60") or 60)
+    warning = get_concentration_warning(watchlist, stock_code, threshold)
+    if warning:
+        if result.risk_warning:
+            result.risk_warning = f"{result.risk_warning} | {warning}"
+        else:
+            result.risk_warning = warning
+
+    return result
+

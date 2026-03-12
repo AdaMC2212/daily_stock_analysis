@@ -73,6 +73,10 @@ class Config:
     tier1_stocks: List[str] = field(default_factory=list)
     tier2_stocks: List[str] = field(default_factory=list)
     monthly_deposit_date: int = 1
+    monthly_budget: float = 0.0
+    buy_alert_min_score: int = 70
+    buy_alert_enabled: bool = True
+    daily_digest_enabled: bool = True
 
     google_credentials_json: Optional[str] = None
     google_sheet_id: Optional[str] = None
@@ -324,6 +328,10 @@ class Config:
             if (c or "").strip()
         ]
         monthly_deposit_date = int(os.getenv('MONTHLY_DEPOSIT_DATE', '1'))
+        monthly_budget = float(os.getenv('MONTHLY_BUDGET', '0') or 0)
+        buy_alert_min_score = int(os.getenv('BUY_ALERT_MIN_SCORE', '70') or 70)
+        buy_alert_enabled = os.getenv('BUY_ALERT_ENABLED', 'true').lower() == 'true'
+        daily_digest_enabled = os.getenv('DAILY_DIGEST_ENABLED', 'true').lower() == 'true'
 
         google_credentials_json = os.getenv('GOOGLE_CREDENTIALS_JSON')
         google_sheet_id = os.getenv('GOOGLE_SHEET_ID')
@@ -455,6 +463,10 @@ class Config:
             tier1_stocks=tier1_stocks,
             tier2_stocks=tier2_stocks,
             monthly_deposit_date=monthly_deposit_date,
+            monthly_budget=monthly_budget,
+            buy_alert_min_score=buy_alert_min_score,
+            buy_alert_enabled=buy_alert_enabled,
+            daily_digest_enabled=daily_digest_enabled,
             google_credentials_json=google_credentials_json,
             google_sheet_id=google_sheet_id,
             google_sheet_tab=google_sheet_tab,

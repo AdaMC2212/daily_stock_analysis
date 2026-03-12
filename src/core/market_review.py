@@ -11,6 +11,7 @@
 """
 
 import logging
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -55,10 +56,27 @@ def run_market_review(
         region = 'us'
 
     try:
+        def _parse_bool(value: Optional[str], default: bool = True) -> bool:
+            if value is None:
+                return default
+            v = value.strip().lower()
+            if not v:
+                return default
+            return v not in {"0", "false", "no", "off"}
+
+        portfolio_impact_enabled = _parse_bool(
+            os.getenv("PORTFOLIO_IMPACT_ENABLED", "true"),
+            default=True,
+        )
+        stock_list_raw = os.getenv("STOCK_LIST", "")
+        stock_list = ", ".join([s.strip().upper() for s in stock_list_raw.split(",") if s.strip()])
+
         market_analyzer = MarketAnalyzer(
             search_service=search_service,
             analyzer=analyzer,
             region=region,
+            portfolio_impact_enabled=portfolio_impact_enabled,
+            portfolio_stock_list=stock_list,
         )
         review_report = market_analyzer.run_daily_review()
         

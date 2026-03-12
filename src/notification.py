@@ -20,6 +20,7 @@ from src.analyzer import AnalysisResult
 from bot.models import BotMessage
 from src.utils.data_processing import normalize_model_used
 from src.notification_sender import TelegramSender
+from src.core.budget_tracker import get_budget_tracker, init_budget_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,7 @@ class NotificationService:
         config = get_config()
         self._config = config
         self._source_message = source_message
+        self._budget_tracker = get_budget_tracker() or init_budget_tracker(config)
 
         # 仅分析结果摘要（Issue #262）：true 时只推送汇总，不含个股详情
         self._report_summary_only = getattr(config, 'report_summary_only', False)
@@ -781,6 +783,88 @@ class NotificationService:
         "fallback": "雅虎财经",
     }
 
+    @staticmethod
+    def _format_alert_price(value) -> str:
+        if value is None:
+            return "N/A"
+        try:
+            return f"${float(value):,.2f}"
+        except (TypeError, ValueError):
+            return "N/A"
+
+    @staticmethod
+    def _pick_digest_emoji(result: AnalysisResult) -> str:
+        score = getattr(result, "sentiment_score", 0) or 0
+        decision = getattr(result, "decision_type", "")
+        if score >= 70 and decision == "buy":
+            return "🟢"
+        if score < 40 or decision == "sell":
+            return "🔴"
+        return "🟡"
+
+    def build_buy_alert(self, result: AnalysisResult) -> str:
+        stock_name = self._escape_md(getattr(result, "name", ""))
+        code = getattr(result, "code", "")
+        header = f"🚨 BUY SIGNAL — {stock_name} ({code})"
+
+        current_price = result.current_price
+        if current_price is None and result.market_snapshot:
+            current_price = result.market_snapshot.get("price") or result.market_snapshot.get("close")
+
+        sniper = result.get_sniper_points() if hasattr(result, "get_sniper_points") else {}
+        ideal_buy = self._clean_sniper_value(sniper.get("ideal_buy", "N/A"))
+        stop_loss = self._clean_sniper_value(sniper.get("stop_loss", "N/A"))
+        take_profit = self._clean_sniper_value(sniper.get("take_profit", "N/A"))
+
+        reasons = getattr(result, "signal_reasons", None) or []
+        if reasons:
+            reasons_text = "\n".join(f"- {r}" for r in reasons)
+        else:
+            reasons_text = "- 无"
+
+        score = getattr(result, "sentiment_score", 0)
+        advice = getattr(result, "operation_advice", "")
+        summary = getattr(result, "analysis_summary", "")
+        reason_line = f"{advice}: {summary}" if summary else advice
+
+        lines = [
+            header,
+            "",
+            f"💰 Current Price: {self._format_alert_price(current_price)}",
+            f"🎯 Ideal Buy: {ideal_buy}",
+            f"🛑 Stop Loss: {stop_loss}",
+            f"✅ Take Profit: {take_profit}",
+            f"📊 Confidence Score: {score}/100",
+            "",
+            "💡 Why it triggered:",
+            reasons_text,
+            "",
+            f"📝 Summary: {reason_line}",
+        ]
+        return "\n".join(lines)
+
+    def build_digest_line(self, result: AnalysisResult) -> str:
+        emoji = self._pick_digest_emoji(result)
+        name = self._escape_md(getattr(result, "name", ""))
+        code = getattr(result, "code", "")
+        advice = getattr(result, "operation_advice", "")
+        score = getattr(result, "sentiment_score", "")
+        trend = getattr(result, "trend_prediction", "")
+        return f"{emoji} {name} ({code}): {advice} | Score: {score} | {trend}"
+
+    def send_buy_alert(self, message: str) -> bool:
+        if not self._telegram:
+            logger.warning("Telegram sender is not configured.")
+            return False
+        return self._telegram.send_buy_alert(message)
+
+    def send_daily_digest(self, message: str) -> bool:
+        if not self._telegram:
+            logger.warning("Telegram sender is not configured.")
+            return False
+        return self._telegram.send_daily_digest(message)
+
+
     def _append_market_snapshot(self, lines: List[str], result: AnalysisResult) -> None:
         snapshot = getattr(result, 'market_snapshot', None)
         if not snapshot:
@@ -857,11 +941,19 @@ class NotificationService:
 
         success = self._telegram.send_portfolio_snapshot(portfolio)
         for result in results:
+            budget_suggestion = None
+            if self._budget_tracker:
+                is_buy_signal = getattr(result, "decision_type", "") == "buy"
+                budget_suggestion = self._budget_tracker.suggest_deployment(
+                    getattr(result, "sentiment_score", None),
+                    is_buy_signal,
+                )
             success = self._telegram.send_stock_card(
                 result,
                 portfolio.get(result.code.upper()),
                 get_tier(result.code),
                 is_deposit_month,
+                budget_suggestion=budget_suggestion,
             ) and success
 
         if is_deposit_month:
@@ -902,5 +994,6 @@ class NotificationService:
         logger.info(f"日报已保存到: {filepath}")
         return str(filepath)
 
-
+
+
 

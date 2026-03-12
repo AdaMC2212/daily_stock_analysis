@@ -173,6 +173,22 @@ class TelegramSender:
             success = self._send(chunk) and success
         return success
 
+    def send_buy_alert(self, alert_message: str) -> bool:
+        if alert_message is None:
+            return False
+        message = alert_message.strip()
+        if not message:
+            return False
+        return self._send(f"⚡ ALERT\n\n{message}")
+
+    def send_daily_digest(self, digest_message: str) -> bool:
+        if digest_message is None:
+            return False
+        message = digest_message.strip()
+        if not message:
+            return False
+        return self._send(message)
+
     def send_portfolio_snapshot(self, portfolio: Dict[str, Dict]) -> bool:
         if not portfolio:
             content = "📊 *持仓快照*\n\n暂无持仓数据"
@@ -225,7 +241,14 @@ class TelegramSender:
 
         return self._send("\n".join(lines))
 
-    def send_stock_card(self, result, position: Optional[Dict], tier: int, is_deposit_month: bool) -> bool:
+    def send_stock_card(
+        self,
+        result,
+        position: Optional[Dict],
+        tier: int,
+        is_deposit_month: bool,
+        budget_suggestion: Optional[Dict] = None,
+    ) -> bool:
         ticker = getattr(result, "code", "")
         score = getattr(result, "sentiment_score", None)
         advice = _format_advice(getattr(result, "operation_advice", "观望"))
@@ -266,6 +289,14 @@ class TelegramSender:
                 action = "❌ 本月跳过"
             lines.append(f"🎯 本月操作: {action}")
 
+
+        if budget_suggestion:
+            deploy_text = _format_money(budget_suggestion.get("deploy_amount"))
+            total_text = _format_money(budget_suggestion.get("total_budget"))
+            remaining_text = _format_money(budget_suggestion.get("remaining_after"))
+            lines.append(
+                f"Suggested deploy: {deploy_text} of your {total_text}. Remaining after this: {remaining_text}"
+            )
         return self._send("\n".join(lines))
 
     def send_monthly_summary(self, ranked_results: List, portfolio: Dict) -> bool:

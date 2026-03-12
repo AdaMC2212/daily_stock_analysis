@@ -46,12 +46,16 @@ from typing import List, Optional, Tuple
 from data_provider.base import canonical_stock_code
 from src.core.pipeline import StockAnalysisPipeline
 from src.core.market_review import run_market_review
+from src.core.signal_filter import filter_signals, get_filter_config
 from src.webui_frontend import prepare_webui_frontend_assets
 from src.config import get_config, Config
+from src.core.budget_tracker import init_budget_tracker
 from src.logging_config import setup_logging, shutdown_logging
 
 
 logger = logging.getLogger(__name__)
+
+_listener_started = False
 
 
 def _apply_post_market_delay(config: Config, args: argparse.Namespace) -> None:
@@ -62,6 +66,24 @@ def _apply_post_market_delay(config: Config, args: argparse.Namespace) -> None:
 
     logger.info("Waiting %s minute(s) before fetching post-market data...", delay_minutes)
     time.sleep(delay_minutes * 60)
+
+
+def _start_bot_listener_if_enabled() -> None:
+    global _listener_started
+    if _listener_started:
+        return
+    enabled = os.getenv("BOT_LISTENER_ENABLED", "true").lower() == "true"
+    if not enabled:
+        return
+    try:
+        from src.bot.telegram_listener import start_listener
+
+        start_listener()
+        _listener_started = True
+        logger.info("BOT_LISTENER: started")
+    except Exception as exc:
+        logger.warning("BOT_LISTENER: failed to start: %s", exc)
+
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -315,11 +337,41 @@ def run_full_analysis(
         )
 
         # 1. 运行个股分析
+        send_notification = (not args.no_notify) and getattr(config, 'single_stock_notify', False)
         results = pipeline.run(
             stock_codes=stock_codes,
             dry_run=args.dry_run,
-            send_notification=not args.no_notify
+            send_notification=send_notification
         )
+
+
+        # === Signal filtering: buy alerts + daily digest ===
+        if results and not args.no_notify:
+            filter_cfg = get_filter_config()
+            filtered = filter_signals(results, filter_cfg.min_score, filter_cfg.alert_enabled)
+
+            if pipeline.notifier.is_available():
+                for idx, result in enumerate(filtered.alert_results):
+                    alert_message = pipeline.notifier.build_buy_alert(result)
+                    if pipeline.notifier.send_buy_alert(alert_message):
+                        logger.info("[%s] Buy alert sent", result.code)
+                    else:
+                        logger.warning("[%s] Buy alert failed", result.code)
+                    if idx < len(filtered.alert_results) - 1:
+                        time.sleep(3)
+
+                if filter_cfg.daily_digest_enabled:
+                    date_str = datetime.now().strftime("%B %d %Y").replace(" 0", " ")
+                    digest_lines = [f"📰 Morning Digest — {date_str}", ""]
+                    for r in results:
+                        digest_lines.append(pipeline.notifier.build_digest_line(r))
+                    digest_message = "\n".join(digest_lines)
+                    if pipeline.notifier.send_daily_digest(digest_message):
+                        logger.info("Daily digest sent")
+                    else:
+                        logger.warning("Daily digest failed")
+            else:
+                logger.info("No notification channels configured; skipping buy alerts and digest.")
 
         # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟
         analysis_delay = getattr(config, 'analysis_delay', 0)
@@ -349,6 +401,28 @@ def run_full_analysis(
             # 如果有结果，赋值给 market_report 用于后续飞书文档生成
             if review_result:
                 market_report = review_result
+
+        # === Earnings evaluator ===
+        if os.getenv("EARNINGS_EVAL_ENABLED", "true").lower() == "true" and not args.no_notify:
+            from data_provider.fmp_provider import get_earnings_calendar
+            from src.core.earnings_evaluator import evaluate_earnings
+
+            fmp_key = os.getenv("FMP_API_KEY", "").strip()
+            stock_list_raw = os.getenv("STOCK_LIST", "")
+            stock_list = [s.strip().upper() for s in stock_list_raw.split(",") if s.strip()]
+
+            if fmp_key and stock_list and pipeline.notifier.is_available():
+                reported = get_earnings_calendar(stock_list, fmp_key)
+                for idx, ticker in enumerate(reported):
+                    verdict = evaluate_earnings(ticker, fmp_key)
+                    if verdict:
+                        message = f"Earnings Report - {ticker}\\n\\n{verdict}"
+                        pipeline.notifier.send_buy_alert(message)
+                        logger.info("Earnings report sent for %s", ticker)
+                    if idx < len(reported) - 1:
+                        time.sleep(3)
+            else:
+                logger.info("Earnings evaluator skipped: missing FMP_API_KEY, STOCK_LIST, or notifier")
 
         # 输出摘要
         if results:
@@ -436,6 +510,9 @@ def main() -> int:
 
     # 加载配置（在设置日志前加载，以获取日志目录）
     config = get_config()
+
+    # Initialize budget tracker before running the pipeline.
+    init_budget_tracker(config)
 
     # 配置日志（输出到控制台和文件）
     setup_logging(log_prefix="stock_analysis", debug=args.debug, log_dir=config.log_dir)

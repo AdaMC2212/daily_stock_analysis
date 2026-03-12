@@ -95,6 +95,8 @@ class MarketAnalyzer:
         search_service: Optional[SearchService] = None,
         analyzer=None,
         region: str = "cn",
+        portfolio_impact_enabled: bool = True,
+        portfolio_stock_list: str = "",
     ):
         """
         初始化大盘分析器
@@ -111,6 +113,8 @@ class MarketAnalyzer:
         self.region = region if region in ("cn", "us") else "cn"
         self.profile: MarketProfile = get_profile(self.region)
         self.strategy = get_market_strategy_blueprint(self.region)
+        self.portfolio_impact_enabled = portfolio_impact_enabled
+        self.portfolio_stock_list = portfolio_stock_list.strip()
 
     def get_market_overview(self) -> MarketOverview:
         """
@@ -452,7 +456,40 @@ class MarketAnalyzer:
         # 按 region 组装市场概况与板块区块（美股无涨跌家数、板块数据）
         stats_block = ""
         sector_block = ""
-        if self.region == "us":
+                portfolio_block = ""
+        if self.portfolio_impact_enabled and self.portfolio_stock_list:
+            portfolio_block = f"""
+
+---
+
+### Portfolio Impact Analysis
+
+The user holds the following stocks: {self.portfolio_stock_list}
+
+After your market commentary, add a final section titled 
+"## 🎯 Your Portfolio Impact"
+
+For each stock in the list, write exactly one sentence explaining 
+how tonight's specific market events affect that position.
+
+Rules:
+- Be specific to what actually happened tonight, not generic
+- If a stock was directly affected (sector rotation, earnings, 
+  macro sensitivity) say exactly how
+- If a stock was largely unaffected, say so briefly
+- Use plain English, no jargon
+- Format as a bullet point per stock
+
+Example output format:
+## 🎯 Your Portfolio Impact
+- NVDA: Tech selloff hit semiconductors hard tonight, NVDA likely opens lower ? watch $108 support level
+- AAPL: Consumer defensives held up, minimal impact expected
+- SPY: Broad market down 0.8%, your SPY position absorbs this proportionally ? no action needed
+- MSFT: Cloud sector was flat, MSFT unaffected by tonight's moves
+- QQQ: Nasdaq dropped 1.2% on rate fears, QQQ directly impacted
+"""
+
+if self.region == "us":
             if self.profile.has_market_stats:
                 stats_block = f"""## Market Overview
 - Up: {overview.up_count} | Down: {overview.down_count} | Flat: {overview.flat_count}
@@ -563,6 +600,7 @@ Lagging: {bottom_sectors_text if bottom_sectors_text else "N/A"}"""
 ---
 
 Output the report content directly, no extra commentary.
+{portfolio_block}
 """
 
         # A 股场景使用中文提示语
