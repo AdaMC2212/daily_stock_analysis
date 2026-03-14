@@ -1,0 +1,49 @@
+name: Telegram Bot Listener
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 * * * *"
+
+concurrency:
+  group: telegram-bot-listener
+  cancel-in-progress: true
+
+jobs:
+  listen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 58
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Create runtime directories
+        run: mkdir -p data logs reports
+
+      - name: Run bot listener
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
+          LITELLM_MODEL: ${{ vars.LITELLM_MODEL || 'gemini/gemini-2.5-flash' }}
+          STOCK_LIST: ${{ secrets.STOCK_LIST }}
+          TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
+          BOT_LISTENER_ENABLED: "true"
+          BOT_LISTENER_POLL_INTERVAL: "5"
+          CONCENTRATION_WARN_THRESHOLD: "60"
+          LOG_LEVEL: INFO
+        run: python bot_runner.py

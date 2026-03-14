@@ -177,6 +177,7 @@ python main.py --force-run
 ## GitHub Actions
 
 Scheduled workflow: `.github/workflows/daily_analysis.yml`
+Bot listener workflow (hourly keepalive): `.github/workflows/bot_listener.yml`
 
 Set these secrets:
 

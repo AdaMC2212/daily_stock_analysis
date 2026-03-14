@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Removed email notification support in favor of Telegram-only delivery.
+- Added a dedicated GitHub Actions bot listener workflow and `bot_runner.py` for always-on polling.
 - Added `ANALYSIS_DELAY` config support for throttling between analysis steps.
 - Added a safe logging shutdown path to avoid teardown-time handler errors.
 - Added timezone-aware scheduling fields (`TIMEZONE`, `SCHEDULE_TIME`, `POST_MARKET_DELAY`) for post-close delivery.
