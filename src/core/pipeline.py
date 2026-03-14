@@ -22,13 +22,20 @@ from typing import List, Dict, Any, Optional, Tuple
 import pandas as pd
 
 from src.config import get_config, Config
-from src.storage import get_db
+try:
+    from src.storage import get_db
+except Exception:
+    get_db = None
 from data_provider import DataFetcherManager
 from src.analyzer import GeminiAnalyzer, AnalysisResult, STOCK_NAME_MAP
 from src.notification import NotificationService
 from src.search_service import SearchService
 from src.enums import ReportType
-from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
+try:
+    from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
+except Exception:
+    StockTrendAnalyzer = None
+    TrendAnalysisResult = None
 from src.core.trading_calendar import get_market_reference_date
 from src.core.sector_map import get_concentration_warning
 from src.models.bot_message import BotMessage
@@ -73,6 +80,12 @@ class StockAnalysisPipeline:
         )
         
         # 初始化各模块
+        if get_db is None or StockTrendAnalyzer is None:
+            raise RuntimeError(
+                "Stock analysis pipeline dependencies are missing. "
+                "Ensure src.storage.py and src.stock_analyzer.py exist if you need this pipeline."
+            )
+
         self.db = get_db()
         self.fetcher_manager = DataFetcherManager()
         self.trend_analyzer = StockTrendAnalyzer()  # 趋势分析器
