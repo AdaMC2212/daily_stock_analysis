@@ -20,7 +20,7 @@ from src.core.pipeline import analyze_single_stock
 
 logger = logging.getLogger(__name__)
 
-_TICKER_RE = re.compile(r"^(?:analyze|analyse)\s+([A-Za-z]{1,5})$", re.IGNORECASE)
+_TICKER_RE = re.compile(r"^(?:analyze|analyse)\s+([A-Za-z]{1,5}(?:\.[A-Za-z]{1,2})?)$", re.IGNORECASE)
 
 
 def _state_path() -> Path:
@@ -142,10 +142,12 @@ def _handle_message(token: str, chat_id: str, text: str) -> None:
 
     match = _TICKER_RE.match(text)
     if not match:
+        if text.lower().startswith(("analyze", "analyse")):
+            _send_message(token, chat_id, "Invalid format. Use: analyze TICKER (e.g. analyze AAPL)")
         return
 
     ticker = match.group(1).upper()
-    if not re.match(r"^[A-Z]{1,5}$", ticker):
+    if not re.match(r"^[A-Z]{1,5}(?:\.[A-Z]{1,2})?$", ticker):
         _send_message(token, chat_id, f"Invalid ticker format: {ticker}")
         return
 

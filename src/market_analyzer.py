@@ -456,7 +456,7 @@ class MarketAnalyzer:
         # 按 region 组装市场概况与板块区块（美股无涨跌家数、板块数据）
         stats_block = ""
         sector_block = ""
-                portfolio_block = ""
+        portfolio_block = ""
         if self.portfolio_impact_enabled and self.portfolio_stock_list:
             portfolio_block = f"""
 
@@ -489,7 +489,7 @@ Example output format:
 - QQQ: Nasdaq dropped 1.2% on rate fears, QQQ directly impacted
 """
 
-if self.region == "us":
+        if self.region == "us":
             if self.profile.has_market_stats:
                 stats_block = f"""## Market Overview
 - Up: {overview.up_count} | Down: {overview.down_count} | Flat: {overview.flat_count}

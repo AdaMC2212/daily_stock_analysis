@@ -3,7 +3,7 @@ name: Daily US Stock Analysis
 on:
   # Tuesday-Saturday at 00:00 UTC = 08:00 MYT, covering the prior US trading session post-close.
   schedule:
-    - cron: "0 0 * * 2-6"
+    - cron: "0 22 * * 1-5"
   workflow_dispatch:
     inputs:
       mode:
