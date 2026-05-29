@@ -148,12 +148,6 @@ class Config:
     bias_threshold: float = 5.0  # 乖离率阈值（%），超过此值提示不追高
     historical_lookback_days: int = 252  # Historical context window for long-term analysis
 
-    # === Agent 模式配置 ===
-    agent_mode: bool = False
-    agent_max_steps: int = 10
-    agent_skills: List[str] = field(default_factory=list)
-    agent_strategy_dir: Optional[str] = None
-
     telegram_bot_token: Optional[str] = None  # Bot Token (@BotFather)
     telegram_chat_id: Optional[str] = None  # Chat ID
     telegram_message_thread_id: Optional[str] = None  # Topic ID (Message Thread ID) for groups
@@ -178,13 +172,6 @@ class Config:
     # 是否保存分析上下文快照（用于历史回溯）
     save_context_snapshot: bool = True
 
-    # === 回测配置 ===
-    backtest_enabled: bool = True
-    backtest_eval_window_days: int = 10
-    backtest_min_age_days: int = 14
-    backtest_engine_version: str = "v1"
-    backtest_neutral_band_pct: float = 2.0
-    
     # === 日志配置 ===
     log_dir: str = "./logs"  # 日志文件目录
     log_level: str = "INFO"  # 日志级别
@@ -195,13 +182,10 @@ class Config:
     http_proxy: Optional[str] = None  # HTTP 代理 (例如: http://127.0.0.1:10809)
     https_proxy: Optional[str] = None # HTTPS 代理
     
-    # === 定时任务配置 ===
-    schedule_enabled: bool = False            # 是否启用定时任务
-    schedule_time: str = "08:00"              # 每日推送时间（HH:MM 格式）
-    timezone: str = "Asia/Kuala_Lumpur"       # Scheduler/report timezone
+    # === 运行配置 ===
+    timezone: str = "Asia/Kuala_Lumpur"       # report timezone
     post_market_delay: int = 0                # Delay after market close before fetching data (minutes)
-    schedule_run_immediately: bool = True     # 启动时是否立即执行一次
-    run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
+    run_immediately: bool = True              # 启动时是否立即执行一次
     market_review_enabled: bool = True        # 是否启用大盘复盘
     # US-only mode: market review region is fixed to us.
     market_review_region: str = "us"
@@ -228,12 +212,7 @@ class Config:
     max_retries: int = 3
     retry_base_delay: float = 1.0
     retry_max_delay: float = 30.0
-    
-    # === WebUI 配置 ===
-    webui_enabled: bool = False
-    webui_host: str = "127.0.0.1"
-    webui_port: int = 8000
-    
+
     # === 机器人配置 ===
     bot_enabled: bool = True              # 是否启用机器人功能
     bot_command_prefix: str = "/"         # 命令前缀
@@ -524,10 +503,6 @@ class Config:
             news_max_age_days=max(1, int(os.getenv('NEWS_MAX_AGE_DAYS', '7'))),
             historical_lookback_days=max(60, int(os.getenv('HISTORICAL_LOOKBACK_DAYS', '252'))),
             bias_threshold=max(1.0, float(os.getenv('BIAS_THRESHOLD', '5.0'))),
-            agent_mode=os.getenv('AGENT_MODE', 'false').lower() == 'true',
-            agent_max_steps=int(os.getenv('AGENT_MAX_STEPS', '10')),
-            agent_skills=[s.strip() for s in os.getenv('AGENT_SKILLS', '').split(',') if s.strip()],
-            agent_strategy_dir=os.getenv('AGENT_STRATEGY_DIR'),
             telegram_bot_token=os.getenv('TELEGRAM_BOT_TOKEN'),
             telegram_chat_id=os.getenv('TELEGRAM_CHAT_ID'),
             telegram_message_thread_id=os.getenv('TELEGRAM_MESSAGE_THREAD_ID'),
@@ -544,11 +519,6 @@ class Config:
             md2img_engine=cls._parse_md2img_engine(os.getenv('MD2IMG_ENGINE', 'wkhtmltoimage')),
             database_path=os.getenv('DATABASE_PATH', './data/stock_analysis.db'),
             save_context_snapshot=os.getenv('SAVE_CONTEXT_SNAPSHOT', 'true').lower() == 'true',
-            backtest_enabled=os.getenv('BACKTEST_ENABLED', 'true').lower() == 'true',
-            backtest_eval_window_days=int(os.getenv('BACKTEST_EVAL_WINDOW_DAYS', '10')),
-            backtest_min_age_days=int(os.getenv('BACKTEST_MIN_AGE_DAYS', '14')),
-            backtest_engine_version=os.getenv('BACKTEST_ENGINE_VERSION', 'v1'),
-            backtest_neutral_band_pct=float(os.getenv('BACKTEST_NEUTRAL_BAND_PCT', '2.0')),
             log_dir=os.getenv('LOG_DIR', './logs'),
             log_level=os.getenv('LOG_LEVEL', 'INFO'),
             max_workers=int(os.getenv('MAX_WORKERS', '3')),
@@ -556,20 +526,14 @@ class Config:
             config_validate_mode=os.getenv('CONFIG_VALIDATE_MODE', 'warn').lower(),
             http_proxy=os.getenv('HTTP_PROXY'),
             https_proxy=os.getenv('HTTPS_PROXY'),
-            schedule_enabled=os.getenv('SCHEDULE_ENABLED', 'false').lower() == 'true',
-            schedule_time=os.getenv('SCHEDULE_TIME', '08:00'),
             timezone=os.getenv('TIMEZONE', 'Asia/Kuala_Lumpur'),
             post_market_delay=max(0, int(os.getenv('POST_MARKET_DELAY', '0'))),
-            schedule_run_immediately=os.getenv('SCHEDULE_RUN_IMMEDIATELY', 'true').lower() == 'true',
             run_immediately=os.getenv('RUN_IMMEDIATELY', 'true').lower() == 'true',
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
             market_review_region=cls._parse_market_review_region(
                 os.getenv('MARKET_REVIEW_REGION', 'us')
             ),
             trading_day_check_enabled=os.getenv('TRADING_DAY_CHECK_ENABLED', 'true').lower() != 'false',
-            webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',
-            webui_host=os.getenv('WEBUI_HOST', '127.0.0.1'),
-            webui_port=int(os.getenv('WEBUI_PORT', '8000')),
             bot_enabled=os.getenv('BOT_ENABLED', 'true').lower() == 'true',
             bot_command_prefix=os.getenv('BOT_COMMAND_PREFIX', '/'),
             bot_rate_limit_requests=int(os.getenv('BOT_RATE_LIMIT_REQUESTS', '10')),
@@ -903,14 +867,7 @@ class Config:
                 field="BOCHA_API_KEY",
             ))
 
-        # --- Schedule / timezone sanity ---
-        if not re.match(r"^\d{2}:\d{2}$", self.schedule_time or ""):
-            issues.append(ConfigIssue(
-                severity="warning",
-                message="SCHEDULE_TIME 格式应为 HH:MM，例如 08:00",
-                field="SCHEDULE_TIME",
-            ))
-
+        # --- Timezone sanity ---
         try:
             from zoneinfo import ZoneInfo
             ZoneInfo(self.timezone)

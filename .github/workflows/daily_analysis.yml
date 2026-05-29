@@ -6,15 +6,6 @@ on:
     - cron: "0 22 * * 1-5"
   workflow_dispatch:
     inputs:
-      mode:
-        description: "Run mode"
-        required: true
-        default: "full"
-        type: choice
-        options:
-          - full
-          - market-only
-          - stocks-only
       force_run:
         description: "Force run (skip trading-day checks)"
         required: false
@@ -65,12 +56,6 @@ jobs:
           BRAVE_API_KEYS: ${{ secrets.BRAVE_API_KEYS }}
           BOCHA_API_KEYS: ${{ secrets.BOCHA_API_KEYS }}
 
-          # Email only
-          EMAIL_SENDER: ${{ vars.EMAIL_SENDER || secrets.EMAIL_SENDER }}
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_RECEIVERS: ${{ vars.EMAIL_RECEIVERS || secrets.EMAIL_RECEIVERS }}
-          EMAIL_SENDER_NAME: ${{ vars.EMAIL_SENDER_NAME || secrets.EMAIL_SENDER_NAME || 'US Stock Analyzer' }}
-
           # Telegram
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -90,8 +75,6 @@ jobs:
           MARKET_REVIEW_REGION: "us"
           MARKET_REVIEW_ENABLED: ${{ vars.MARKET_REVIEW_ENABLED || secrets.MARKET_REVIEW_ENABLED || 'true' }}
           TRADING_DAY_CHECK_ENABLED: ${{ vars.TRADING_DAY_CHECK_ENABLED || secrets.TRADING_DAY_CHECK_ENABLED || 'true' }}
-          MERGE_EMAIL_NOTIFICATION: ${{ vars.MERGE_EMAIL_NOTIFICATION || secrets.MERGE_EMAIL_NOTIFICATION || 'true' }}
-          SINGLE_STOCK_NOTIFY: ${{ vars.SINGLE_STOCK_NOTIFY || secrets.SINGLE_STOCK_NOTIFY || 'false' }}
 
           # Runtime
           REPORT_TYPE: ${{ vars.REPORT_TYPE || secrets.REPORT_TYPE || 'simple' }}
@@ -106,25 +89,16 @@ jobs:
           ENABLE_CHIP_DISTRIBUTION: "false"
 
         run: |
-          MODE="${{ github.event.inputs.mode || 'full' }}"
           FORCE_RUN_ARG=""
           if [ "${{ github.event.inputs.force_run }}" = "true" ]; then
             FORCE_RUN_ARG="--force-run"
           fi
 
-          echo "Mode=$MODE"
           echo "Stock list=$STOCK_LIST"
           echo "Market review region=$MARKET_REVIEW_REGION"
-          echo "Email configured=$([ -n "$EMAIL_SENDER" ] && [ -n "$EMAIL_PASSWORD" ] && echo yes || echo no)"
           echo "Gemini configured=$([ -n "$GEMINI_API_KEY" ] && echo yes || echo no)"
 
-          if [ "$MODE" = "market-only" ]; then
-            python main.py --market-review $FORCE_RUN_ARG
-          elif [ "$MODE" = "stocks-only" ]; then
-            python main.py --no-market-review $FORCE_RUN_ARG
-          else
-            python main.py $FORCE_RUN_ARG
-          fi
+          python main.py $FORCE_RUN_ARG
 
       - name: Upload reports
         uses: actions/upload-artifact@v4

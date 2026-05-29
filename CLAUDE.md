@@ -25,7 +25,9 @@ pip install -r requirements.txt
 
 ## Architecture
 
-This is a **daily automated US market review system** that fetches market data, aggregates news, runs Gemini AI analysis, and delivers a structured report to Telegram.
+This is a **daily automated US market review system** that fetches market data, aggregates news, runs Gemini AI analysis, and delivers a structured report to Telegram. It also runs a light Telegram bot for portfolio snapshots, and a daily news digest.
+
+> **On-demand single-stock analysis (`analyze TICKER`) lives in a separate repo** — `stock_analyzer_bot` — with its own Telegram bot token. The heavy analysis pipeline (technical indicators, signal filtering, budget tracking, SQLite storage) was extracted there. This repo no longer contains it.
 
 ### Entry Point and Flow
 
@@ -48,14 +50,10 @@ This is a **daily automated US market review system** that fetches market data, 
 | `src/market_analyzer.py` | Builds the 4-section market review; fetches 11 SPDR sector ETFs for 板块轮动 |
 | `src/core/market_profile.py` | `US_PROFILE` / `CN_PROFILE` — controls which sections are enabled per region |
 | `src/search_service.py` | Multi-provider news search; auto-rotates API keys; deduplicates results |
-| `src/stock_analyzer.py` | Technical analysis (MA/MACD/RSI/volume); produces `TrendAnalysisResult` |
 | `data_provider/base.py` | Strategy pattern fetcher manager; yfinance is the primary provider |
-| `src/storage.py` | SQLAlchemy ORM over SQLite (`data/analysis.db`) for OHLCV and analysis cache |
 | `src/core/daily_news.py` | Daily news digest; sends links + affected-ticker tags via `send_news_digest()` |
-| `src/core/signal_filter.py` | Consecutive-day filter: same buy signal required 2 days in a row to fire |
-| `src/core/budget_tracker.py` | Monthly deployment tracker; 45% first buy, 30% second buy rule |
-| `src/core/earnings_evaluator.py` | FMP earnings data → Gemini evaluation; gated by `EARNINGS_EVAL_ENABLED` |
-| `src/bot/telegram_listener.py` | Hourly-polled Telegram bot for on-demand analysis commands |
+| `src/core/earnings_evaluator.py` | FMP earnings data → Gemini evaluation; gated by `EARNINGS_EVAL_ENABLED`; invoked from `market_review.py` |
+| `src/bot/telegram_listener.py` | Hourly-polled Telegram bot for `portfolio` + `help` commands |
 
 ### Scheduling
 
@@ -72,10 +70,7 @@ Secrets (API keys, tokens) live in GitHub Actions secrets, not committed files.
 Config is loaded once at startup into a frozen singleton. All modules call `get_config()` to access it. Multi-value env vars (e.g. `TAVILY_API_KEYS`) accept comma-separated values for automatic key rotation.
 
 Runtime state files (created automatically in `data/`):
-- `analysis.db` — SQLite OHLCV and analysis cache
-- `signal_history.json` — tracks consecutive-day buy signals
-- `bot_state.json` — tracks processed Telegram message IDs
-- `budget.json` — monthly cash deployment tracker
+- `bot_state.json` — tracks processed Telegram message IDs for the portfolio/help bot
 
 ### LLM Integration
 

@@ -20,7 +20,6 @@ from src.analyzer import AnalysisResult
 from src.models.bot_message import BotMessage
 from src.utils.data_processing import normalize_model_used
 from src.notification_sender import TelegramSender
-from src.core.budget_tracker import get_budget_tracker, init_budget_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +69,6 @@ class NotificationService:
         config = get_config()
         self._config = config
         self._source_message = source_message
-        self._budget_tracker = get_budget_tracker() or init_budget_tracker(config)
 
         # 仅分析结果摘要（Issue #262）：true 时只推送汇总，不含个股详情
         self._report_summary_only = getattr(config, 'report_summary_only', False)
@@ -946,19 +944,12 @@ class NotificationService:
 
         success = self._telegram.send_portfolio_snapshot(portfolio)
         for result in results:
-            budget_suggestion = None
-            if self._budget_tracker:
-                is_buy_signal = getattr(result, "decision_type", "") == "buy"
-                budget_suggestion = self._budget_tracker.suggest_deployment(
-                    getattr(result, "sentiment_score", None),
-                    is_buy_signal,
-                )
             success = self._telegram.send_stock_card(
                 result,
                 portfolio.get(result.code.upper()),
                 get_tier(result.code),
                 is_deposit_month,
-                budget_suggestion=budget_suggestion,
+                budget_suggestion=None,
             ) and success
 
         if is_deposit_month:

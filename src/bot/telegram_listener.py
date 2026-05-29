@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Telegram polling listener for on-demand stock analysis.
+Telegram polling listener for portfolio snapshot and help commands.
+
+Single-stock analysis (`analyze TICKER`) lives in the separate analyzer bot repo.
 """
 
 from __future__ import annotations
@@ -8,21 +10,17 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
 import requests
 
 from src.config import get_config
-from src.core.pipeline import StockAnalysisPipeline
 from src.portfolio.google_sheets_reader import load_portfolio_from_config
 
 logger = logging.getLogger(__name__)
-
-_TICKER_RE = re.compile(r"^(?:analyze|analyse)\s+([A-Za-z]{1,5}(?:\.[A-Za-z]{1,2})?)$", re.IGNORECASE)
 
 
 def _state_path() -> Path:
@@ -65,7 +63,6 @@ def _send_message(token: str, chat_id: str, text: str, parse_mode: Optional[str]
 def _build_help() -> str:
     return "\n".join([
         "Available commands:",
-        "- analyze TICKER  (or analyse TICKER)",
         "- portfolio",
         "- help",
     ])
@@ -152,57 +149,6 @@ def _build_portfolio_scorecard() -> str:
     return "\n".join(lines)
 
 
-def _build_evaluation_reply(ticker: str, payload: Dict[str, Any]) -> str:
-    def esc(value: Optional[str]) -> str:
-        if value is None:
-            return ""
-        return (
-            str(value)
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-        )
-
-    buy_verdict = esc(payload.get("buy_verdict", ""))
-    verdict_reason = esc(payload.get("verdict_reason", ""))
-    quality_score = esc(payload.get("quality_score", ""))
-    quality_summary = esc(payload.get("quality_summary", ""))
-    growth_score = esc(payload.get("growth_score", ""))
-    growth_summary = esc(payload.get("growth_summary", ""))
-    macro_fit = esc(payload.get("macro_fit", ""))
-    macro_summary = esc(payload.get("macro_summary", ""))
-    portfolio_fit_comment = esc(payload.get("portfolio_fit_comment", ""))
-    entry_zone = esc(payload.get("entry_zone", ""))
-    stop_loss = esc(payload.get("stop_loss", ""))
-    key_risks = esc(payload.get("key_risks", ""))
-    watch_for = esc(payload.get("watch_for", ""))
-
-    lines = [
-        f"🔍 {esc(ticker)} — {buy_verdict}",
-        "",
-        f"📝 {verdict_reason}",
-        "",
-        f"<b>📊 Quality</b>: {quality_score}/100",
-        f"{quality_summary}",
-        "",
-        f"<b>📈 Growth</b>: {growth_score}/100",
-        f"{growth_summary}",
-        "",
-        f"<b>🌍 Macro</b>: {macro_fit}",
-        f"{macro_summary}",
-        "",
-        "<b>🗂 Portfolio Fit</b>:",
-        f"{portfolio_fit_comment}",
-        "",
-        f"<b>💰 Entry</b>: {entry_zone} | <b>Stop</b>: {stop_loss}",
-        "",
-        f"<b>⚠️ Risks</b>: {key_risks}",
-        "",
-        f"<b>👀 Watch for</b>: {watch_for}",
-    ]
-    return "\n".join([line for line in lines if line is not None])
-
-
 def _handle_message(token: str, chat_id: str, text: str) -> None:
     if not text:
         return
@@ -214,78 +160,13 @@ def _handle_message(token: str, chat_id: str, text: str) -> None:
         _send_message(token, chat_id, _build_portfolio_scorecard())
         return
 
-    match = _TICKER_RE.match(text)
-    if not match:
-        if text.lower().startswith(("analyze", "analyse")):
-            _send_message(token, chat_id, "Invalid format. Use: analyze TICKER (e.g. analyze AAPL)")
+    if text.lower().startswith(("analyze", "analyse")):
+        _send_message(
+            token,
+            chat_id,
+            "Single-stock analysis moved to the dedicated analyzer bot. Send 'analyze TICKER' there.",
+        )
         return
-
-    ticker = match.group(1).upper()
-    if not re.match(r"^[A-Z]{1,5}(?:\.[A-Z]{1,2})?$", ticker):
-        _send_message(token, chat_id, f"Invalid ticker format: {ticker}")
-        return
-
-    done_flag = {"done": False}
-
-    def _late_notice() -> None:
-        time.sleep(30)
-        if not done_flag["done"]:
-            _send_message(token, chat_id, f"Analyzing {ticker}... this takes about 30 seconds ⏳")
-
-    threading.Thread(target=_late_notice, daemon=True).start()
-
-    config = get_config()
-    portfolio = load_portfolio_from_config(config) or {}
-    pipeline = StockAnalysisPipeline(config=config)
-    portfolio_fit = pipeline._build_portfolio_fit_context(ticker, portfolio)
-
-    stock_name = None
-    realtime = None
-    try:
-        realtime = pipeline.fetcher_manager.get_realtime_quote(ticker)
-        stock_name = getattr(realtime, "name", None) if realtime else None
-    except Exception:
-        realtime = None
-    if not stock_name:
-        try:
-            stock_name = pipeline.fetcher_manager.get_stock_name(ticker)
-        except Exception:
-            stock_name = None
-
-    context = {
-        "code": ticker,
-        "stock_name": stock_name or ticker,
-        "date": pipeline._get_reference_date(ticker).isoformat(),
-    }
-    if realtime:
-        context["realtime"] = {
-            "name": getattr(realtime, "name", None),
-            "price": getattr(realtime, "price", None),
-            "change_pct": getattr(realtime, "change_pct", None),
-            "volume_ratio": getattr(realtime, "volume_ratio", None),
-            "turnover_rate": getattr(realtime, "turnover_rate", None),
-            "pe_ratio": getattr(realtime, "pe_ratio", None),
-            "pb_ratio": getattr(realtime, "pb_ratio", None),
-            "total_mv": getattr(realtime, "total_mv", None),
-            "circ_mv": getattr(realtime, "circ_mv", None),
-            "high_52w": getattr(realtime, "high_52w", None),
-            "low_52w": getattr(realtime, "low_52w", None),
-        }
-
-    try:
-        fundamental_context = pipeline._build_fundamental_context(ticker, realtime)
-        if fundamental_context:
-            context["fundamentals"] = fundamental_context
-    except Exception as exc:
-        logger.warning("Fundamental context build failed for %s: %s", ticker, exc)
-
-    result = pipeline.analyzer.evaluate_for_purchase(context, portfolio_fit)
-    done_flag["done"] = True
-    if result is None:
-        _send_message(token, chat_id, f"Could not evaluate {ticker}. Please try again.")
-        return
-    reply = _build_evaluation_reply(ticker, result)
-    _send_message(token, chat_id, reply, parse_mode="HTML")
 
 
 def _poll_loop() -> None:
