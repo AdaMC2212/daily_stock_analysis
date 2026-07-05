@@ -21,6 +21,7 @@ from src.market_analyzer import MarketAnalyzer
 from src.search_service import SearchService
 from src.analyzer import GeminiAnalyzer
 from src.portfolio.google_sheets_reader import load_portfolio_from_config
+from src.core.value_radar import build_value_radar_section
 
 
 logger = logging.getLogger(__name__)
@@ -80,7 +81,20 @@ def run_market_review(
             portfolio_stock_list=stock_list,
         )
         review_report = market_analyzer.run_daily_review()
-        
+
+        value_radar_enabled = _parse_bool(os.getenv("VALUE_RADAR_ENABLED", "true"), default=True)
+        if review_report and value_radar_enabled:
+            try:
+                watchlist_tickers = [s.strip().upper() for s in stock_list_raw.split(",") if s.strip()]
+                fmp_api_key = (config.fmp_api_keys[0] if getattr(config, "fmp_api_keys", None) else "")
+                # Keep the review well under Telegram's ~4096-char cap; send_market_review does not split messages.
+                available_chars = max(0, 3800 - len(review_report))
+                radar_section = build_value_radar_section(watchlist_tickers, fmp_api_key, max_chars=available_chars)
+                if radar_section:
+                    review_report = f"{review_report}\n\n### 💎 价值雷达\n{radar_section}"
+            except Exception as exc:
+                logger.warning("价值雷达生成失败，跳过: %s", exc)
+
         if review_report:
             # 保存报告到文件
             date_str = datetime.now().strftime('%Y%m%d')

@@ -181,6 +181,35 @@ def get_cash_flow(ticker: str, api_key: str) -> Optional[Dict]:
         return None
 
 
+def get_stock_screener(api_key: str, market_cap_more_than: float = 10_000_000_000, limit: int = 100) -> List[Dict]:
+    """Return large-cap US stock candidates from FMP's screener endpoint."""
+    key = f"stock_screener:{int(market_cap_more_than)}:{limit}"
+    cached = _get_cached(key)
+    if cached is not None:
+        return cached
+
+    url = (
+        f"{BASE_URL}/stock-screener?marketCapMoreThan={int(market_cap_more_than)}"
+        f"&isActivelyTrading=true&country=US&limit={limit}&apikey={api_key}"
+    )
+    data = _get_json(url)
+    if not data or not isinstance(data, list):
+        return []
+
+    result = [
+        {
+            "ticker": (item.get("symbol") or "").upper(),
+            "company_name": item.get("companyName"),
+            "market_cap": item.get("marketCap"),
+            "sector": item.get("sector"),
+        }
+        for item in data
+        if item.get("symbol")
+    ]
+    _set_cached(key, result)
+    return result
+
+
 def get_earnings_calendar(tickers: List[str], api_key: str) -> List[str]:
     key = "earnings_calendar"
     cached = _get_cached(key)

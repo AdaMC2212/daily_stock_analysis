@@ -65,6 +65,11 @@ jobs:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_SHEET_TAB: ${{ vars.GOOGLE_SHEET_TAB || 'Portfolio' }}
 
+          # FMP (earnings evaluator + value radar discovery screener)
+          FMP_API_KEYS: ${{ secrets.FMP_API_KEYS }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+          VALUE_RADAR_ENABLED: ${{ vars.VALUE_RADAR_ENABLED || secrets.VALUE_RADAR_ENABLED || 'true' }}
+
           # Tier configuration
           TIER1_STOCKS: ${{ secrets.TIER1_STOCKS }}
           TIER2_STOCKS: ${{ secrets.TIER2_STOCKS }}
