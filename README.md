@@ -218,6 +218,62 @@ The `pnl_pct` (percentage return since purchase) is computed in code from `avg_b
 
 Today's daily change % is fetched from Yahoo Finance at runtime and is not read from the sheet.
 
+### Moomoo Auto-Sync (optional, local only)
+
+Instead of manually maintaining the sheet, you can auto-sync your real Moomoo holdings into it. This runs entirely on your own machine and is **read-only — it cannot place trades**:
+
+1. Install and log into [OpenD](https://www.moomoo.com/download/OpenAPI) (free), and set it to start with Windows.
+2. `pip install -r requirements-local.txt` (installs `moomoo-api`, kept out of the main `requirements.txt` so CI never needs it).
+3. Run `python scripts/sync_moomoo_portfolio.py` (or double-click `scripts/sync_moomoo.bat`) any time to pull current positions from OpenD and overwrite the `Portfolio` tab.
+4. Optionally register the `.bat` in Windows Task Scheduler to run automatically (e.g. twice daily — after US close and again in the evening — so trades made either session are reflected before the next report).
+
+If Moomoo returns no positions or the sync fails for any reason, the sheet is left untouched — a bad sync never wipes good data.
+
+Config (local `.env` only, not needed in GitHub Actions):
+```env
+MOOMOO_HOST=127.0.0.1
+MOOMOO_PORT=11111
+MOOMOO_SECURITY_FIRM=FUTUINC     # confirm the right value for your account/region
+MOOMOO_TRD_ENV=REAL
+```
+
+---
+
+## Value Radar (💎 价值雷达)
+
+A deterministic, rules-based scan for "great company at a fair price" — no AI involved, so results are reproducible and cheap to run daily. Appended as an extra section to the market review message when something qualifies; silently omitted otherwise.
+
+**Quality gates** (a holding/candidate must pass all of these to count as a "great company"):
+- ROE > 15%
+- Gross margin > 40% (or operating margin > 20%)
+- Revenue growth > 5%
+- Debt/equity < 100
+- Positive free cash flow
+
+**Fair-price triggers** (any one qualifies as "fair price"):
+- Price ≥15% below its 52-week high
+- PEG ratio < 1.5
+- PE ratio < 25
+
+Two passes run each day:
+- **Watchlist alerts** — checks every ticker in `STOCK_LIST` against the criteria above using Yahoo Finance fundamentals.
+- **Discovery** — pulls large-cap US candidates from FMP's stock screener (cached 24h) and runs the same checks on names outside your watchlist. Skipped automatically if no FMP key is configured.
+
+Config:
+```env
+VALUE_RADAR_ENABLED=true
+FMP_API_KEYS=key1,key2          # enables the discovery pass; watchlist alerts work without it
+# Optional threshold overrides:
+VALUE_RADAR_MIN_ROE=15
+VALUE_RADAR_MIN_MARGIN=40
+VALUE_RADAR_MIN_OPERATING_MARGIN=20
+VALUE_RADAR_MIN_REVENUE_GROWTH=5
+VALUE_RADAR_MAX_DEBT_TO_EQUITY=100
+VALUE_RADAR_MIN_DISCOUNT_FROM_HIGH_PCT=15
+VALUE_RADAR_MAX_PEG=1.5
+VALUE_RADAR_MAX_PE=25
+```
+
 ---
 
 ## Stock Tiers
@@ -253,16 +309,21 @@ Any stock in `STOCK_LIST` not in either tier defaults to Tier 1 behaviour.
 │   │   ├── signal_filter.py         # Buy alert vs digest filtering + history
 │   │   ├── budget_tracker.py        # Monthly cash deployment tracker
 │   │   ├── earnings_evaluator.py    # Earnings report evaluation via FMP + Gemini
+│   │   ├── value_radar.py           # 💎 Quality-at-fair-price scan (watchlist + FMP discovery)
 │   │   ├── sector_map.py            # Sector classification with yfinance fallback
 │   │   └── trading_calendar.py      # US trading day resolution
 │   ├── portfolio/
-│   │   └── google_sheets_reader.py  # Read-only Google Sheets portfolio reader
+│   │   ├── google_sheets_reader.py  # Read-only Google Sheets portfolio reader
+│   │   └── moomoo_reader.py         # Read-only Moomoo OpenD position reader (local only)
 │   └── notification_sender/
 │       └── telegram_sender.py       # Telegram Bot API: all message formatting
 ├── data_provider/
 │   ├── base.py                      # BaseFetcher + DataFetcherManager
 │   ├── yfinance_fetcher.py          # Yahoo Finance: price, fundamentals, realtime
-│   └── fmp_provider.py              # FMP: income statement, balance sheet, cash flow
+│   └── fmp_provider.py              # FMP: income statement, balance sheet, cash flow, screener
+├── scripts/
+│   ├── sync_moomoo_portfolio.py     # Local sync: Moomoo positions → Google Sheet
+│   └── sync_moomoo.bat              # Windows Task Scheduler wrapper for the sync
 ├── reports/                         # Local saved reports (Markdown)
 ├── logs/                            # Runtime logs
 ├── data/                            # SQLite DB, budget state, signal history, FMP cache
@@ -328,6 +389,24 @@ EARNINGS_EVAL_ENABLED=true
 FMP_API_KEY=your_fmp_key
 EARNINGS_LOOKBACK_DAYS=7        # How many days back to check for earnings reports
 ```
+
+### Value Radar
+
+```env
+VALUE_RADAR_ENABLED=true
+FMP_API_KEYS=key1,key2          # Optional — enables the discovery pass
+```
+See [Value Radar](#value-radar-💎-价值雷达) above for the full threshold override list.
+
+### Moomoo Portfolio Sync (local only)
+
+```env
+MOOMOO_HOST=127.0.0.1
+MOOMOO_PORT=11111
+MOOMOO_SECURITY_FIRM=FUTUINC
+MOOMOO_TRD_ENV=REAL
+```
+Not used by GitHub Actions — only by `scripts/sync_moomoo_portfolio.py` run on your own machine.
 
 ### Telegram Bot Listener
 
@@ -401,8 +480,9 @@ GOOGLE_SHEET_ID
 TIER1_STOCKS
 TIER2_STOCKS
 MONTHLY_BUDGET
-FMP_API_KEY           (optional, for earnings)
+FMP_API_KEY           (optional, for earnings + value radar discovery)
 TAVILY_API_KEYS       (optional, for news)
+VALUE_RADAR_ENABLED   (optional, defaults to true)
 ```
 
 The `daily_analysis.yml` workflow runs on a cron schedule. The `bot_listener.yml` workflow runs hourly to keep the Telegram bot responsive.
