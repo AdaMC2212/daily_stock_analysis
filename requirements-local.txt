@@ -1,0 +1,3 @@
+# Local-only dependencies for scripts that require a machine-local service
+# (e.g. Moomoo OpenD gateway). Not installed in CI/GitHub Actions.
+moomoo-api
